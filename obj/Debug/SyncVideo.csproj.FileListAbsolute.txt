@@ -1,0 +1,3 @@
+I:\Visual Studio Code\SyncVideo\obj\Debug\SyncVideo.csproj.AssemblyReference.cache
+I:\Visual Studio Code\SyncVideo\obj\Debug\SyncVideo.GeneratedMSBuildEditorConfig.editorconfig
+I:\Visual Studio Code\SyncVideo\obj\Debug\SyncVideo.csproj.CoreCompileInputs.cache
