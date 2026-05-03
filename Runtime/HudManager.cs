@@ -1,6 +1,8 @@
 using BombRushMP.Plugin;
 using HarmonyLib;
 using Reptile;
+using System;
+using System.Reflection;
 using UnityEngine;
 
 namespace SyncVideo.Runtime
@@ -28,6 +30,46 @@ namespace SyncVideo.Runtime
         private const float AfkTickInterval = 0.5f;
 
         private static CanvasGroup _gameplayCanvasGroup;
+
+        private static object GetMusicPlayer()
+        {
+            try
+            {
+                if (Core.Instance == null)
+                    return null;
+
+                var t = Traverse.Create(Core.Instance);
+                var audioManager = t.Property("AudioManager").GetValue()
+                                ?? t.Property("audioManager").GetValue()
+                                ?? t.Field("audioManager").GetValue()
+                                ?? t.Field("AudioManager").GetValue();
+                if (audioManager == null)
+                    return null;
+
+                var at = Traverse.Create(audioManager);
+                return at.Property("musicPlayer").GetValue()
+                    ?? at.Property("MusicPlayer").GetValue()
+                    ?? at.Field("musicPlayer").GetValue()
+                    ?? at.Field("MusicPlayer").GetValue();
+            }
+            catch { return null; }
+        }
+
+        private static object GetAudioManager()
+        {
+            try
+            {
+                if (Core.Instance == null) return null;
+                var t = Traverse.Create(Core.Instance);
+                return t.Property("AudioManager").GetValue()
+                    ?? t.Property("audioManager").GetValue()
+                    ?? t.Field("audioManager").GetValue()
+                    ?? t.Field("AudioManager").GetValue();
+            }
+            catch { return null; }
+        }
+
+        private static bool _musicMuted;
 
         public static HudMode CurrentMode => _currentMode;
 
@@ -95,6 +137,9 @@ namespace SyncVideo.Runtime
 
             _suppressAfkForLobby = SyncVideoPlugin.Settings?.SuppressAFK?.Value == true;
 
+            if (SyncVideoPlugin.Settings?.MuteMusicAndAmbient?.Value == true)
+                MuteForLobby();
+
             Apply();
         }
 
@@ -115,9 +160,69 @@ namespace SyncVideo.Runtime
                 mpSettings.AFKMessages    = _hasSavedSettings ? _savedAfkMessages    : true;
             }
             _hasSavedSettings = false;
+
+            RestoreAudio();
         }
 
-        private static void Apply()
+        private static void MuteForLobby()
+        {
+            if (_musicMuted)
+                return;
+
+            var audioManager = GetAudioManager();
+            if (audioManager == null) { _musicMuted = true; return; }
+
+            var amType = audioManager.GetType();
+            var flags  = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+            // Mute music
+            try { amType.GetMethod("MuteMusic", flags)?.Invoke(audioManager, null); } catch { }
+
+            // Mute ambience
+            try
+            {
+                var sources = amType.GetField("ambienceAudioSources", flags)?.GetValue(audioManager) as AudioSource[];
+                if (sources != null)
+                    foreach (var src in sources)
+                        if (src != null) src.mute = true;
+            }
+            catch { }
+
+            try { amType.GetMethod("PauseAllGameplayLoopingSfx", flags)?.Invoke(audioManager, null); } catch { }
+
+            _musicMuted = true;
+        }
+
+        private static void RestoreAudio()
+        {
+            if (!_musicMuted)
+                return;
+
+            var audioManager = GetAudioManager();
+            var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+            // Restore music
+            try { audioManager?.GetType().GetMethod("UnMuteMusic", flags)?.Invoke(audioManager, null); } catch { }
+
+            // Unmute ambience
+            try
+            {
+                if (audioManager != null)
+                {
+                    var sources = audioManager.GetType().GetField("ambienceAudioSources", flags)?.GetValue(audioManager) as AudioSource[];
+                    if (sources != null)
+                        foreach (var src in sources)
+                            if (src != null) src.mute = false;
+                }
+            }
+            catch { }
+
+            try { audioManager?.GetType().GetMethod("ResumeAllGameplayLoopingSfx", flags)?.Invoke(audioManager, null); } catch { }
+
+            _musicMuted = false;
+        }
+
+                private static void Apply()
         {
             bool hideUi = _currentMode >= HudMode.UI;
             bool suppressAFK = _currentMode >= HudMode.UI || _suppressAfkForLobby;
