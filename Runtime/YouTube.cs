@@ -132,7 +132,7 @@ namespace SyncVideo.Runtime
                             if (IsUrlError(stderr))
                                 onError?.Invoke("URL Error!");
                             else if (IsAgeRestrictedError(stderr))
-                                onError?.Invoke("Video not supported!\nVideo is age-restricted.");
+                                onError?.Invoke("<color=red>Video not supported!\nVideo is age-restricted.</color>");
                             else
                                 onError?.Invoke("Video not supported!");
                             return;
@@ -311,7 +311,7 @@ namespace SyncVideo.Runtime
                             }
 
                             CompletePendingError(requestKey, IsAgeRestrictedError(lastError)
-                                ? "Video not supported!\nVideo is age-restricted."
+                                ? "<color=red>Video not supported!\nVideo is age-restricted.</color>"
                                 : $"Download failed: {lastError}");
                             return;
                         }

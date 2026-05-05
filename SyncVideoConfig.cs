@@ -34,6 +34,7 @@ namespace SyncVideo
         public ConfigEntry<bool> MkvTranscodeToH264 { get; }
         public ConfigEntry<float> YouTubeVolumeScale { get; }
         public ConfigEntry<float> SubtitleFontSize { get; }
+        public ConfigEntry<bool> StaticTVs { get; }
 
         public string PluginDirectory { get; }
         public string AdvancedConfigPath { get; }
@@ -43,21 +44,23 @@ namespace SyncVideo
             PluginDirectory = Path.GetDirectoryName(pluginLocation) ?? string.Empty;
             AdvancedConfigPath = advancedConfig.ConfigFilePath;
 
-            EnableOfflineMode = config.Bind("OfflineMode", "EnableOfflineMode", false, "Disable all online functionality when enabled. Create local lobbies for personal use.");
+            EnableOfflineMode = config.Bind("Offline Mode", "EnableOfflineMode", false, "Disable all online functionality when enabled. Create local lobbies for personal use.");
             
             HideNativeLobbyUi = config.Bind("ACN", "Hide Lobby UI", true, "Hide ACN's lobby UI by default.");
             SuppressAFK = config.Bind("ACN", "Suppress AFK", true, "Hide AFK animations for yourself and other players while in a Sync Video lobby.");
 
-            HostAutoplay = config.Bind("Video", "Host Autoplay", true, "If hosting a video lobby, automatically start playback loading your video URL.");
+            HostAutoplay = config.Bind("Video", "Host Autoplay", true, "If hosting a video lobby, automatically start playback after loading your video URL.");
             VideoRenderResolution = config.Bind("Video", "Video Render Resolution", "854x480", "Render resolution used for MP4 video playback. Higher resolutions will cause lag. Options: 1920x1080, 1280x720, 960x540, 854x480, 640x360, 426x240.");
             YouTubeStreamResolution = config.Bind("Video", "YouTube Resolution", "1280x720", "Resolution used when streaming YouTube videos. Options: 1920x1080, 1280x720, 960x540, 854x480, 640x360, 426x240.");
             UseFFmpeg = config.Bind("Video", "Use FFmpeg", false, "Enable FFmpeg for higher quality YouTube video playback. Requires ffmpeg.exe to be placed in the plugin folder, next to SyncVideo.dll. When disabled, stream videos without downloading.");
             EnableMkvSupport = config.Bind("Video", "MKV Support", true, "Enable experimental MKV playback support. An MKV Settings menu for the host will appear in the app when an MKV file is loaded.");
-            SubtitleFontSize = config.Bind("Video", "Subtitle Font Size", 34f, "Font size for MKV subtitles displayed on the TV screen. Default is 34.");
-            ShowScreenPositionMenu = config.Bind("Video", "Show Screen Position Menu", false, "Show the Screen Position menu in the phone app. Lets you move the screen around. Does not sync with viewers if host.");
+            SubtitleFontSize = config.Bind("Video", "Subtitle Font Size", 34f, "Font size for MKV subtitles displayed on the TV screen. Default is 34.");            
 
             DefaultVolume = config.Bind("Volume", "Default Volume", 90, "Starting volume level (0–100). Automatically rounds to increments of 10 in-game.");
             MuteMusicAndAmbient = config.Bind("Volume", "Mute Music and Ambient SFX", true, "Mute the game's music and ambient sounds while in a Sync Video lobby.");
+
+            StaticTVs = config.Bind("World Props", "Static TVs", true, "Make TVs stay in place, so people can't kick them and disrupt your watch party.");
+            ShowScreenPositionMenu = config.Bind("World Props", "Show Screen Position Menu", false, "Show the Screen Position menu in the phone app. Lets you move the screen around. Does not sync with viewers if host.");
 
             TvObjectName = advancedConfig.Bind("Debug", "TV Object Name", "TV", "Scene object name to bind video screens to.");
             ScreenMaterialTextureName = advancedConfig.Bind("Debug", "Screen Material Texture Name", "_MainTex", "Texture slot used when drawing video to a renderer.");

@@ -13,12 +13,14 @@ namespace SyncVideo.Runtime
         private readonly ConcurrentQueue<Action> _mainThreadActions = new ConcurrentQueue<Action>();
 
         private int _lastAppliedRevision = -1;
+        private int _lastAppliedSeekRevision;
         private bool _restartAfterPrepare;
         private bool _restartAutoPlay;
         private bool _autoplayAfterPrepare;
         private bool _lastRemotePlaying;
         private float _viewerCommandSyncingTimer;
-        
+        private int _viewerSeekDirection;
+
         private float _seekCooldownTimer; // Post-seek cooldown to prevent the Tick from re-seeking while Unity is still buffering
         private double _lastSeekTarget = double.MinValue;
         private string _lastLoadedLobbyUrl = string.Empty;
@@ -28,7 +30,7 @@ namespace SyncVideo.Runtime
         private bool _loadInProgress;
         private int _activeLoadRequestId;
         private System.Threading.CancellationTokenSource _mkvConversionCts;
-        private int _lastAppliedAudioTrack    = int.MinValue;
+        private int _lastAppliedAudioTrack = int.MinValue;
         private int _lastAppliedSubtitleTrack = int.MinValue;
         private bool _viewerLocalTrackOverride = false; // Let viewer override host settings for MKVs with tracks, so viewer can watch dubbed while host watches subbed
 
@@ -41,7 +43,7 @@ namespace SyncVideo.Runtime
             _backend = new DirectUrlVideoBackend();
             _lobbyManager.ActiveStateChanged += OnActiveStateChanged;
             _backend.Prepared += OnPrepared;
-            _backend.Ended    += OnEnded;
+            _backend.Ended += OnEnded;
             _backend.AudioTrackSwitchCompleted += OnAudioTrackSwitchCompleted;
             _backend.AudioTracksChanged += OnAudioTracksChanged;
         }
@@ -50,7 +52,7 @@ namespace SyncVideo.Runtime
         {
             _lobbyManager.ActiveStateChanged -= OnActiveStateChanged;
             _backend.Prepared -= OnPrepared;
-            _backend.Ended    -= OnEnded;
+            _backend.Ended -= OnEnded;
             _backend.AudioTrackSwitchCompleted -= OnAudioTrackSwitchCompleted;
             _backend.AudioTracksChanged -= OnAudioTracksChanged;
             _backend.Dispose();
@@ -60,6 +62,7 @@ namespace SyncVideo.Runtime
         public float LocalVolume => _backend.LocalVolume;
         public bool IsMuted => _backend.IsMuted;
         public bool IsViewerCommandSyncing => _viewerCommandSyncingTimer > 0f;
+        public int ViewerSeekDirection => _viewerSeekDirection;
         public bool IsCurrentMkv() => (_backend as DirectUrlVideoBackend)?.IsCurrentMkv ?? false;
         public bool ShouldShowMkvSettings()
         {
@@ -259,7 +262,8 @@ namespace SyncVideo.Runtime
             if (_stateIsStale)
                 return;
 
-            if (drift >= SyncVideoPlugin.Settings.HardSeekThresholdSeconds.Value)
+            // Existing viewers no longer hard-seek for small drifts
+            if (drift >= Math.Max(1.5d, (double)SyncVideoPlugin.Settings.HardSeekThresholdSeconds.Value))
             {
                 // Only re-seek if the cooldown expired OR if the host video position changed
                 bool targetShifted = Math.Abs(target - _lastSeekTarget) > 5.0d;
@@ -285,11 +289,12 @@ namespace SyncVideo.Runtime
             else if (drift <= 0.03d)
             {
                 _viewerCommandSyncingTimer = 0f;
+                _viewerSeekDirection = 0;
                 _backend.NudgeToward(current, 0d);
             }
             else
             {
-                // Dead zone in case drift is small but above display threshold, hold normal speed
+                // Dead zone in case drift is small but above display threshold so hold normal speed
                 _backend.NudgeToward(current, 0d);
             }
         }
@@ -347,6 +352,10 @@ namespace SyncVideo.Runtime
         public void HostSeekRelative(double seconds)
         {
             if (!_lobbyManager.IsHost)
+                return;
+
+            var currentLobby = _lobbyManager.CurrentLobby;
+            if (currentLobby != null && currentLobby.HasEnded)
                 return;
 
             var newTime = Math.Max(0d, _backend.CurrentTimeSeconds + seconds);
@@ -425,6 +434,12 @@ namespace SyncVideo.Runtime
             SyncVideoPlugin.ScreenManager?.OnPlaybackStateChanged(false, hostTime);
         }
 
+        private void SeekAndSetDirection(double target)
+        {
+            _viewerSeekDirection = target > _backend.CurrentTimeSeconds ? 1 : -1;
+            _backend.Seek(target);
+        }
+
         private int CancelPendingLoadAndPlayback()
         {
             _activeLoadRequestId++;
@@ -438,7 +453,7 @@ namespace SyncVideo.Runtime
             _pendingLoadVideoId = string.Empty;
             _seekCooldownTimer = 0f;
             _lastSeekTarget = double.MinValue;
-            _lastAppliedAudioTrack    = int.MinValue;
+            _lastAppliedAudioTrack = int.MinValue;
             _lastAppliedSubtitleTrack = int.MinValue;
             _viewerLocalTrackOverride = false;
             YouTube.CancelAllPendingRequests();
@@ -498,17 +513,17 @@ namespace SyncVideo.Runtime
                 // FFmpeg MKV conversion
                 // Check if using a code and force transcode into H.264 + AAC, better compatibility
                 bool userTranscode = SyncVideoPlugin.Settings?.MkvTranscodeToH264?.Value ?? false;
-                string sourceUrl   = directPlayableUrl ?? originalUrl;
-                string ffmpegPath  = SubtitleManager.FindFfmpegPath();
+                string sourceUrl = directPlayableUrl ?? originalUrl;
+                string ffmpegPath = SubtitleManager.FindFfmpegPath();
 
                 _backend.SetConvertingStatus();
 
                 // Check cache
-                string cachedRemux     = SubtitleManager.GetMkvCachedOutputPath(sourceUrl, false);
+                string cachedRemux = SubtitleManager.GetMkvCachedOutputPath(sourceUrl, false);
                 string cachedTranscode = SubtitleManager.GetMkvCachedOutputPath(sourceUrl, true);
                 string cachedPath =
                     System.IO.File.Exists(cachedTranscode) ? cachedTranscode :
-                    System.IO.File.Exists(cachedRemux)     ? cachedRemux     :
+                    System.IO.File.Exists(cachedRemux) ? cachedRemux :
                     null;
 
                 if (cachedPath != null)
@@ -530,7 +545,7 @@ namespace SyncVideo.Runtime
 
                                 _loadInProgress = false;
                                 _pendingLoadLobbyUrl = string.Empty;
-                                _pendingLoadVideoId  = string.Empty;
+                                _pendingLoadVideoId = string.Empty;
 
                                 if (success && !string.IsNullOrEmpty(resultPath))
                                     _backend.Load(MakeFileUrl(resultPath), originalUrl, videoId ?? string.Empty);
@@ -556,10 +571,12 @@ namespace SyncVideo.Runtime
             {
                 CancelPendingLoadAndPlayback(); // safe to delete file now and cancel stale viewer loads
                 _lastAppliedRevision = -1;
+                _lastAppliedSeekRevision = 0;
                 _lastRemotePlaying = false;
                 _viewerCommandSyncingTimer = 0f;
                 _seekCooldownTimer = 0f;
                 _lastSeekTarget = double.MinValue;
+                _viewerSeekDirection = 0;
                 _lastLoadedLobbyUrl = string.Empty;
                 _lastLoadedVideoId = string.Empty;
                 YouTube.ClearAllCache();
@@ -594,6 +611,8 @@ namespace SyncVideo.Runtime
             {
                 _lastLoadedLobbyUrl = lobbyUrl;
                 _lastLoadedVideoId = lobbyVideoId;
+                _lastAppliedSeekRevision = lobby.SeekRevision;
+                _viewerSeekDirection = 0;
                 _viewerCommandSyncingTimer = 0f;
                 CancelPendingLoadAndPlayback();
                 LoadUrlWithResolution(lobbyUrl, lobbyVideoId);
@@ -605,6 +624,8 @@ namespace SyncVideo.Runtime
                 StateChanged?.Invoke(MakeState(lobby));
                 return;
             }
+
+            bool hostSeekChanged = lobby.SeekRevision > _lastAppliedSeekRevision;
 
             if (lobby.HasEnded && !lobby.IsPlaying)
             {
@@ -619,7 +640,12 @@ namespace SyncVideo.Runtime
                     _backend.Pause();
 
                 if (Math.Abs(_backend.CurrentTimeSeconds - expected) >= 0.03d)
-                    _backend.Seek(expected);
+                {
+                    if (hostSeekChanged)
+                        SeekAndSetDirection(expected);
+                    else
+                        _backend.Seek(expected);
+                }
             }
             else
             {
@@ -630,15 +656,22 @@ namespace SyncVideo.Runtime
 
                 if (drift >= 1.5d)
                 {
-                    // Hard seek for large drift
-                    _seekCooldownTimer = 5.0f;
-                    _lastSeekTarget = expected;
-                    _backend.Seek(expected);
+                    // Hard seek for large drift but still respect the cooldown to prevent seeks that can crash players
+                    bool targetShifted = Math.Abs(expected - _lastSeekTarget) > 5.0d;
+                    if (_seekCooldownTimer <= 0f || targetShifted)
+                    {
+                        _seekCooldownTimer = 5.0f;
+                        _lastSeekTarget = expected;
+                        if (hostSeekChanged)
+                            SeekAndSetDirection(expected);
+                        else
+                            _backend.Seek(expected);
+                    }
                     _viewerCommandSyncingTimer = drift >= 0.75d ? 0.6f : 0f;
                 }
                 else if (!_backend.IsPlaying && expected <= 0.5d)
                 {
-                    // Snap to start: backend not yet playing and video is at or near the beginning
+                    // Snap to start
                     _backend.Seek(0d);
                     _viewerCommandSyncingTimer = 0f;
                 }
@@ -652,6 +685,9 @@ namespace SyncVideo.Runtime
                     _viewerCommandSyncingTimer = 0f;
                 }
             }
+
+            if (hostSeekChanged)
+                _lastAppliedSeekRevision = lobby.SeekRevision;
 
             _lastRemotePlaying = lobby.IsPlaying;
             SyncVideoPlugin.ScreenManager?.OnVideoChanged();
@@ -707,6 +743,8 @@ namespace SyncVideo.Runtime
                 return;
 
             var expected = GetExpectedTime(lobby);
+            _lastAppliedSeekRevision = lobby.SeekRevision;
+            _viewerSeekDirection = 0;
 
             if (lobby.HasEnded && !lobby.IsPlaying)
             {
@@ -725,12 +763,13 @@ namespace SyncVideo.Runtime
                     _seekCooldownTimer = 5.0f;
                     _lastSeekTarget = initialTime;
                 }
+                // Use seek so the join sync doesn't trigger the seek status for Viewer
                 _backend.Seek(initialTime);
 
                 if (lobby.IsPlaying)
                 {
                     lobby.MediaTimeSeconds = initialTime;
-                    lobby.LastSeenSeconds  = UnityEngine.Time.unscaledTime;
+                    lobby.LastSeenSeconds = UnityEngine.Time.unscaledTime;
                     _backend.Play();
                 }
                 else
@@ -849,7 +888,7 @@ namespace SyncVideo.Runtime
         {
             if (_lobbyManager.IsHost) return;
             if (_viewerLocalTrackOverride) return;
-            _lastAppliedAudioTrack    = int.MinValue;
+            _lastAppliedAudioTrack = int.MinValue;
             _lastAppliedSubtitleTrack = int.MinValue;
             var lobby = _lobbyManager.CurrentLobby;
             if (lobby == null) return;
@@ -867,7 +906,7 @@ namespace SyncVideo.Runtime
             var backend = _backend as DirectUrlVideoBackend;
             if (backend == null) return;
 
-            int audioTrack    = lobby.SelectedAudioTrack;
+            int audioTrack = lobby.SelectedAudioTrack;
             int subtitleTrack = lobby.SelectedSubtitleTrack;
 
             if (audioTrack != _lastAppliedAudioTrack)

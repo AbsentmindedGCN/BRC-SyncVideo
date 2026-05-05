@@ -14,6 +14,7 @@ namespace SyncVideo.Model
         public double MediaTimeSeconds;
         public long HostUnixMilliseconds;
         public int Revision;
+        public int SeekRevision;
         public bool HasEnded;
         public bool IsOpen = true;
         public bool SuggestionsOpen;

@@ -70,6 +70,8 @@ namespace SyncVideo.Runtime
         }
 
         private static bool _musicMuted;
+        private static float _ambientSFXRestoreTimer;
+        private const float AmbientSFXRestoreTimerSec = 2f;
 
         public static HudMode CurrentMode => _currentMode;
 
@@ -93,6 +95,17 @@ namespace SyncVideo.Runtime
 
         public static void Tick()
         {
+            // Delay audio restore after leaving a lobby so a random disconnect doesn't restart ambient sfx
+            if (_ambientSFXRestoreTimer > 0f)
+            {
+                _ambientSFXRestoreTimer -= Time.unscaledDeltaTime;
+                if (_ambientSFXRestoreTimer <= 0f)
+                {
+                    _ambientSFXRestoreTimer = 0f;
+                    RestoreAudio();
+                }
+            }
+
             bool suppressAFK = _currentMode >= HudMode.UI || (_suppressAfkForLobby && SyncVideoPlugin.LobbyManager?.InLobby == true);
             if (!suppressAFK)
                 return;
@@ -137,6 +150,9 @@ namespace SyncVideo.Runtime
 
             _suppressAfkForLobby = SyncVideoPlugin.Settings?.SuppressAFK?.Value == true;
 
+            // Cancel any pending delayed restore
+            _ambientSFXRestoreTimer = 0f;
+
             if (SyncVideoPlugin.Settings?.MuteMusicAndAmbient?.Value == true)
                 MuteForLobby();
 
@@ -161,7 +177,8 @@ namespace SyncVideo.Runtime
             }
             _hasSavedSettings = false;
 
-            RestoreAudio();
+            if (_musicMuted)
+                _ambientSFXRestoreTimer = AmbientSFXRestoreTimerSec;
         }
 
         private static void MuteForLobby()

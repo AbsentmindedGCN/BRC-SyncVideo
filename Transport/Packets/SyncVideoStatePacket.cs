@@ -11,6 +11,7 @@ namespace SyncVideo.Transport.Packets
         public double MediaTimeSeconds;
         public long HostUnixMilliseconds;
         public int Revision;
+        public int SeekRevision;
         public bool HasEnded;
         public bool IsOpen = true;
         public bool SuggestionsOpen;
@@ -42,6 +43,8 @@ namespace SyncVideo.Transport.Packets
                 SelectedAudioTrack    = reader.ReadInt32();
             if (reader.BaseStream.Position < reader.BaseStream.Length)
                 SelectedSubtitleTrack = reader.ReadInt32();
+            if (reader.BaseStream.Position < reader.BaseStream.Length)
+                SeekRevision = reader.ReadInt32();
         }
 
         protected override void WritePayload(BinaryWriter writer)
@@ -58,6 +61,7 @@ namespace SyncVideo.Transport.Packets
             writer.Write(SuggestionsOpen);
             writer.Write(SelectedAudioTrack);
             writer.Write(SelectedSubtitleTrack);
+            writer.Write(SeekRevision);
         }
     }
 }

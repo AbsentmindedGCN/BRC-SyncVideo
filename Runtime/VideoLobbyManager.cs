@@ -34,6 +34,7 @@ namespace SyncVideo.Runtime
             public double MediaTimeSeconds;
             public long HostUnixMilliseconds;
             public int Revision;
+            public int SeekRevision;
             public bool HasEnded;
             public bool IsOpen = true;
             public bool SuggestionsOpen;
@@ -60,11 +61,6 @@ namespace SyncVideo.Runtime
         private bool _receivedFreshStateForCurrentLobby;
         private float _stateRequestRetryTimer;
         private bool _syncVideoHostActive; // fix for other BombRushMP lobbies
-
-        private float _burstTimer1;
-        private float _burstTimer2;
-        // When non-zero, burst retransmits
-        private ushort _burstTargetPlayerId;
 
         // Reusable buffer
         private readonly Dictionary<string, VideoLobby> _refreshPreviousById = new Dictionary<string, VideoLobby>(StringComparer.Ordinal);
@@ -576,29 +572,6 @@ namespace SyncVideo.Runtime
                 _pushCooldownTimer = Math.Max(0f, _pushCooldownTimer - deltaTime);
 
             // Drain burst retransmit timers
-            if (_burstTimer1 > 0f)
-            {
-                _burstTimer1 -= deltaTime;
-                if (_burstTimer1 <= 0f)
-                {
-                    if (_burstTargetPlayerId != 0)
-                        SendStatePacketToPlayer(_burstTargetPlayerId);
-                    else
-                        BroadcastStatePacket();
-                }
-            }
-            if (_burstTimer2 > 0f)
-            {
-                _burstTimer2 -= deltaTime;
-                if (_burstTimer2 <= 0f)
-                {
-                    if (_burstTargetPlayerId != 0)
-                        SendStatePacketToPlayer(_burstTargetPlayerId);
-                    else
-                        BroadcastStatePacket();
-                }
-            }
-
             _stateTimer += deltaTime;
             if (_stateTimer >= SyncVideoPlugin.Settings.HostStateResendInterval.Value)
             {
@@ -726,6 +699,7 @@ namespace SyncVideo.Runtime
             _hostShadow.MediaTimeSeconds = 0d;
             _hostShadow.IsPlaying = false;
             _hostShadow.Revision++;
+            _hostShadow.SeekRevision = 0;
             _hostShadow.HasEnded = false;
             _hostShadow.HostUnixMilliseconds = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             // Reset track selection — a new video starts with default audio and no subtitles
@@ -735,6 +709,7 @@ namespace SyncVideo.Runtime
             CurrentLobby.MediaTimeSeconds = 0d; // Fix for pause color
             CurrentLobby.IsPlaying = false;
             CurrentLobby.HasEnded  = false;
+            CurrentLobby.SeekRevision = _hostShadow.SeekRevision;
 
             if (_offlineLobbyActive)
             {
@@ -784,15 +759,20 @@ namespace SyncVideo.Runtime
             if (!IsHost || CurrentLobby == null)
                 return;
 
+            if (CurrentLobby.HasEnded || _hostShadow.HasEnded)
+                return;
+
             _hostShadow.IsSyncVideoLobby    = true;
             _hostShadow.MediaTimeSeconds    = Math.Max(0d, _hostShadow.MediaTimeSeconds + seconds);
             _hostShadow.HasEnded            = false;
             _hostShadow.Revision++;
+            _hostShadow.SeekRevision++;
             _hostShadow.HostUnixMilliseconds = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
             CurrentLobby.MediaTimeSeconds    = _hostShadow.MediaTimeSeconds;
             CurrentLobby.HasEnded            = _hostShadow.HasEnded;
             CurrentLobby.Revision            = _hostShadow.Revision;
+            CurrentLobby.SeekRevision        = _hostShadow.SeekRevision;
             CurrentLobby.HostUnixMilliseconds = _hostShadow.HostUnixMilliseconds;
 
             if (_offlineLobbyActive)
@@ -954,6 +934,7 @@ namespace SyncVideo.Runtime
                 MediaTimeSeconds     = _hostShadow.MediaTimeSeconds,
                 HostUnixMilliseconds = _hostShadow.HostUnixMilliseconds,
                 Revision             = _hostShadow.Revision,
+                SeekRevision         = _hostShadow.SeekRevision,
                 HasEnded             = _hostShadow.HasEnded,
                 IsOpen               = _hostShadow.IsOpen,
                 SelectedAudioTrack   = _hostShadow.SelectedAudioTrack,
@@ -1058,11 +1039,7 @@ namespace SyncVideo.Runtime
                     return;
 
                 _hostShadow.HostUnixMilliseconds = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                PushHostShadowToNativeLobby();
-                _burstTargetPlayerId = packet.SenderPlayerId;
                 SendStatePacketToPlayer(packet.SenderPlayerId);
-                _burstTimer1 = 0.35f;
-                _burstTimer2 = 0.80f;
                 return;
             }
 
@@ -1159,17 +1136,18 @@ namespace SyncVideo.Runtime
             _receivedFreshStateForCurrentLobby = true;
             _stateRequestRetryTimer = 0f;
 
-            var shouldApply = statePacket.Revision > CurrentLobby.Revision
-                || !string.Equals(CurrentLobby.CurrentUrl, statePacket.Url, StringComparison.Ordinal)
-                || !string.Equals(CurrentLobby.CurrentVideoId, statePacket.VideoId, StringComparison.Ordinal)
-                || CurrentLobby.IsPlaying != statePacket.IsPlaying
-                || CurrentLobby.HasEnded != statePacket.HasEnded
-                || Math.Abs(CurrentLobby.MediaTimeSeconds - statePacket.MediaTimeSeconds) > 0.01d
-                || CurrentLobby.HostUnixMilliseconds != statePacket.HostUnixMilliseconds
+            // Separate the video/playback state from video position changes, that way existing viewers aren't forced to resync
+            // Position updates from state packets must reset LastSeenSeconds or use ActiveStateChanged
+            bool structuralChanged = statePacket.Revision > CurrentLobby.Revision
+                || !string.Equals(CurrentLobby.CurrentUrl,       statePacket.Url,     StringComparison.Ordinal)
+                || !string.Equals(CurrentLobby.CurrentVideoId,   statePacket.VideoId, StringComparison.Ordinal)
+                || CurrentLobby.IsPlaying  != statePacket.IsPlaying
+                || CurrentLobby.HasEnded   != statePacket.HasEnded
+                || CurrentLobby.IsOpen     != statePacket.IsOpen
                 || CurrentLobby.SelectedAudioTrack    != statePacket.SelectedAudioTrack
                 || CurrentLobby.SelectedSubtitleTrack != statePacket.SelectedSubtitleTrack;
 
-            if (!shouldApply)
+            if (!structuralChanged)
                 return;
 
             CurrentLobby.CurrentUrl           = statePacket.Url ?? string.Empty;
@@ -1178,12 +1156,13 @@ namespace SyncVideo.Runtime
             CurrentLobby.HasEnded             = statePacket.HasEnded;
             CurrentLobby.IsOpen               = statePacket.IsOpen;
             CurrentLobby.SuggestionsOpen      = statePacket.SuggestionsOpen;
-            CurrentLobby.MediaTimeSeconds     = Math.Max(0d, statePacket.MediaTimeSeconds);
-            CurrentLobby.HostUnixMilliseconds = statePacket.HostUnixMilliseconds;
             CurrentLobby.Revision             = statePacket.Revision;
-            CurrentLobby.LastSeenSeconds      = Time.unscaledTime;
+            CurrentLobby.SeekRevision         = statePacket.SeekRevision;
             CurrentLobby.SelectedAudioTrack   = statePacket.SelectedAudioTrack;
             CurrentLobby.SelectedSubtitleTrack = statePacket.SelectedSubtitleTrack;
+            CurrentLobby.MediaTimeSeconds     = Math.Max(0d, statePacket.MediaTimeSeconds);
+            CurrentLobby.HostUnixMilliseconds = statePacket.HostUnixMilliseconds;
+            CurrentLobby.LastSeenSeconds      = Time.unscaledTime;
 
             if (!IsHost && _suggestionsOpen != statePacket.SuggestionsOpen)
             {
@@ -1211,17 +1190,17 @@ namespace SyncVideo.Runtime
             _receivedFreshStateForCurrentLobby = true;
             _stateRequestRetryTimer = 0f;
 
-            var shouldApply = statePacket.Revision > CurrentLobby.Revision
-                || !string.Equals(CurrentLobby.CurrentUrl, statePacket.Url, StringComparison.Ordinal)
-                || !string.Equals(CurrentLobby.CurrentVideoId, statePacket.VideoId, StringComparison.Ordinal)
-                || CurrentLobby.IsPlaying != statePacket.IsPlaying
-                || CurrentLobby.HasEnded != statePacket.HasEnded
-                || Math.Abs(CurrentLobby.MediaTimeSeconds - statePacket.MediaTimeSeconds) > 0.01d
-                || CurrentLobby.HostUnixMilliseconds != statePacket.HostUnixMilliseconds
+            // Only apply for major change
+            bool structuralChanged = statePacket.Revision > CurrentLobby.Revision
+                || !string.Equals(CurrentLobby.CurrentUrl,       statePacket.Url,     StringComparison.Ordinal)
+                || !string.Equals(CurrentLobby.CurrentVideoId,   statePacket.VideoId, StringComparison.Ordinal)
+                || CurrentLobby.IsPlaying  != statePacket.IsPlaying
+                || CurrentLobby.HasEnded   != statePacket.HasEnded
+                || CurrentLobby.IsOpen     != statePacket.IsOpen
                 || CurrentLobby.SelectedAudioTrack    != statePacket.SelectedAudioTrack
                 || CurrentLobby.SelectedSubtitleTrack != statePacket.SelectedSubtitleTrack;
 
-            if (!shouldApply)
+            if (!structuralChanged)
                 return;
 
             CurrentLobby.CurrentUrl           = statePacket.Url ?? string.Empty;
@@ -1230,12 +1209,13 @@ namespace SyncVideo.Runtime
             CurrentLobby.HasEnded             = statePacket.HasEnded;
             CurrentLobby.IsOpen               = statePacket.IsOpen;
             CurrentLobby.SuggestionsOpen      = statePacket.SuggestionsOpen;
-            CurrentLobby.MediaTimeSeconds     = Math.Max(0d, statePacket.MediaTimeSeconds);
-            CurrentLobby.HostUnixMilliseconds = statePacket.HostUnixMilliseconds;
             CurrentLobby.Revision             = statePacket.Revision;
-            CurrentLobby.LastSeenSeconds      = Time.unscaledTime;
+            CurrentLobby.SeekRevision         = statePacket.SeekRevision;
             CurrentLobby.SelectedAudioTrack   = statePacket.SelectedAudioTrack;
             CurrentLobby.SelectedSubtitleTrack = statePacket.SelectedSubtitleTrack;
+            CurrentLobby.MediaTimeSeconds     = Math.Max(0d, statePacket.MediaTimeSeconds);
+            CurrentLobby.HostUnixMilliseconds = statePacket.HostUnixMilliseconds;
+            CurrentLobby.LastSeenSeconds      = Time.unscaledTime;
 
             if (!IsHost && _suggestionsOpen != statePacket.SuggestionsOpen)
             {
@@ -1255,6 +1235,7 @@ namespace SyncVideo.Runtime
                 MediaTimeSeconds     = source.MediaTimeSeconds,
                 HostUnixMilliseconds = source.HostUnixMilliseconds,
                 Revision             = source.Revision,
+                SeekRevision         = source.SeekRevision,
                 HasEnded             = source.HasEnded,
                 IsOpen               = source.IsOpen,
                 SuggestionsOpen      = source.SuggestionsOpen,
@@ -1301,6 +1282,7 @@ namespace SyncVideo.Runtime
                 MediaTimeSeconds     = Math.Max(0d, statePacket.MediaTimeSeconds),
                 HostUnixMilliseconds = statePacket.HostUnixMilliseconds,
                 Revision             = statePacket.Revision,
+                SeekRevision         = statePacket.SeekRevision,
                 IsOpen               = statePacket.IsOpen,
                 LastSeenSeconds      = Time.unscaledTime,
                 SelectedAudioTrack   = statePacket.SelectedAudioTrack,
@@ -1397,7 +1379,17 @@ namespace SyncVideo.Runtime
                 {
                     CurrentLobby = native.CurrentLobby != null ? BuildSnapshot(native.CurrentLobby, true) : null;
                     if (CurrentLobby != null && _refreshPreviousById.TryGetValue(CurrentLobby.LobbyId, out var previousCurrent))
+                    {
+                        // Preserve live position data set by time/state packets
                         CurrentLobby.LastSeenSeconds = previousCurrent.LastSeenSeconds;
+                        if (previousCurrent.MediaTimeSeconds > 0d)
+                        {
+                            CurrentLobby.MediaTimeSeconds     = previousCurrent.MediaTimeSeconds;
+                            CurrentLobby.HostUnixMilliseconds = previousCurrent.HostUnixMilliseconds;
+                        }
+                        if (previousCurrent.Revision > CurrentLobby.Revision)
+                            CurrentLobby.Revision = previousCurrent.Revision;
+                    }
                 }
             }
             else
@@ -1445,6 +1437,7 @@ namespace SyncVideo.Runtime
                 MediaTimeSeconds      = sync.MediaTimeSeconds,
                 HostUnixMilliseconds  = sync.HostUnixMilliseconds,
                 Revision              = sync.Revision,
+                SeekRevision          = sync.SeekRevision,
                 HasEnded              = sync.HasEnded,
                 IsOpen                = sync.IsOpen,
                 SuggestionsOpen       = sync.SuggestionsOpen,
@@ -1662,6 +1655,7 @@ namespace SyncVideo.Runtime
                     MediaTimeSeconds     = _hostShadow.MediaTimeSeconds,
                     HostUnixMilliseconds = _hostShadow.HostUnixMilliseconds,
                     Revision             = _hostShadow.Revision,
+                    SeekRevision         = _hostShadow.SeekRevision,
                     HasEnded             = _hostShadow.HasEnded,
                     IsOpen               = _hostShadow.IsOpen,
                     SuggestionsOpen      = _hostShadow.SuggestionsOpen,
@@ -1691,6 +1685,7 @@ namespace SyncVideo.Runtime
                     MediaTimeSeconds     = _hostShadow.MediaTimeSeconds,
                     HostUnixMilliseconds = _hostShadow.HostUnixMilliseconds,
                     Revision             = _hostShadow.Revision,
+                    SeekRevision         = _hostShadow.SeekRevision,
                     HasEnded             = _hostShadow.HasEnded,
                     IsOpen               = _hostShadow.IsOpen,
                     SuggestionsOpen      = _hostShadow.SuggestionsOpen,
@@ -1739,6 +1734,7 @@ namespace SyncVideo.Runtime
                         result.SuggestionsOpen   = version >= 4 && ms.Position < ms.Length ? reader.ReadBoolean() : false;
                         result.SelectedAudioTrack    = version >= 5 && ms.Position < ms.Length ? reader.ReadInt32() : 0;
                         result.SelectedSubtitleTrack = version >= 5 && ms.Position < ms.Length ? reader.ReadInt32() : -1;
+                        result.SeekRevision = ms.Position < ms.Length ? reader.ReadInt32() : 0;
                         isSyncVideo = result.IsSyncVideoLobby;
                         return result;
                     }
@@ -1768,6 +1764,7 @@ namespace SyncVideo.Runtime
             writer.Write(shadow.SuggestionsOpen);
             writer.Write(shadow.SelectedAudioTrack);
             writer.Write(shadow.SelectedSubtitleTrack);
+            writer.Write(shadow.SeekRevision);
         }
     }
 }

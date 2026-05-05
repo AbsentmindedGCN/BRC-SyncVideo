@@ -58,7 +58,7 @@ namespace SyncVideo.Runtime
         // Tick-rate cap
         private float _tickAccumulator;
         private bool  _ffmpegMode;
-        private float _ffmpegModeCheckTimer; // starts at 0 → checks on first tick
+        private float _ffmpegModeCheckTimer; // starts at 0 then checks on first tick
         private const float FfmpegModeCheckInterval = 10f;
 
         public struct ScreenTransformData
@@ -254,24 +254,55 @@ namespace SyncVideo.Runtime
                         StringComparison.OrdinalIgnoreCase)) continue;
 
                 DestroyExistingSyncVideoChildren(junk.transform);
+                MakeTvStatic(junk);
                 var screen = CreateScreenForTv(junk.transform);
                 if (screen != null) { _screens.Add(screen); count++; }
-            }
 
-            if (count == 0)
-            {
-                _logger.LogWarning("SyncVideo found no TV/screen objects in the current map.");
-                _controller.StopForMissingScreen();
-            }
+                if (count == 0)
+                {
+                    _logger.LogWarning("SyncVideo found no TV/screen objects in the current map.");
+                    _controller.StopForMissingScreen();
+                }
 
-            _logger.LogInfo($"SyncVideo spawned {count} visual TV screen(s).");
-            ApplyBackendTexture();
-            ApplyStatusOverlay();
+                _logger.LogInfo($"SyncVideo spawned {count} visual TV screen(s).");
+                ApplyBackendTexture();
+                ApplyStatusOverlay();
+            }
         }
 
-        public void OnVideoChanged()        { ApplyBackendTexture(); ApplyStatusOverlay(); }
+        public void OnVideoChanged()
+        {
+            ApplyBackendTexture(); ApplyStatusOverlay();
+        }
+
         public void OnPlaybackStateChanged(bool playing, double timeSeconds)
-                                            { ApplyBackendTexture(); ApplyStatusOverlay(); }
+        { 
+            ApplyBackendTexture(); ApplyStatusOverlay();
+        }
+
+        private void MakeTvStatic(Junk junk)
+        {
+            // PropDisguiseController.FreezeProps() won't work, since it doesn't touch physics at all and only snaps props back to their start position
+            if (junk == null || !SyncVideoPlugin.Settings.StaticTVs.Value)
+                return;
+
+            try
+            {
+                var anchor = junk.GetComponent<StaticTvAnchor>();
+                if (anchor == null)
+                    anchor = junk.gameObject.AddComponent<StaticTvAnchor>();
+
+                anchor.Capture(junk.transform);
+                anchor.FreezeRigidbodies();
+
+                if (junk.enabled)
+                    junk.enabled = false;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning($"SyncVideo could not make TV static: {ex.Message}");
+            }
+        }
 
         private void DestroyExistingSyncVideoChildren(Transform tvTransform)
         {
@@ -332,7 +363,7 @@ namespace SyncVideo.Runtime
             TryMakeMaterialOneSided(overlayRenderer.material);
             overlayQuad.SetActive(false);
 
-            // Satus text canvas
+            // Status text canvas
             const float canvasWidth  = 1600f;
             const float canvasHeight = 900f;
 
@@ -563,10 +594,20 @@ namespace SyncVideo.Runtime
                     default: return "FFmpeg enabled!\nDownloading and Syncing";
                 }
             }
+
+            string seekHint = string.Empty;
+            int seekDir = _controller.ViewerSeekDirection;
+            if (seekDir > 0)
+                seekHint = "\n\n<size=70%>Seeking forward!</size>";
+            else if (seekDir < 0)
+                seekHint = "\n\n<size=70%>Seeking backward!</size>";
+
             switch (_loadingAnimStep)
             {
-                case 1: return "Syncing."; case 2: return "Syncing..";
-                case 3: return "Syncing..."; default: return "Syncing";
+                case 1: return "Syncing." + seekHint;
+                case 2: return "Syncing.." + seekHint;
+                case 3: return "Syncing..." + seekHint;
+                default: return "Syncing" + seekHint;
             }
         }
 
@@ -742,7 +783,7 @@ namespace SyncVideo.Runtime
             bool videoPlaying  = _controller.Backend.IsPlaying;
             bool statusActive  = !string.IsNullOrWhiteSpace(_controller.Backend.StatusOverlayText);
 
-            // Aaudio channel switch indicator (Viewer only)
+            // Audio channel switch indicator (Viewer only)
             bool audioSwitching     = isViewer && _controller.IsMkvAudioSwitching();
             // Subtitle channel indicator (Host and Viewer)
             bool subtitleExtracting = _controller.IsMkvSubtitleExtracting();
@@ -881,6 +922,56 @@ namespace SyncVideo.Runtime
                 if (screen != null) screen.Dispose();
             }
             _screens.Clear();
+        }
+
+
+        private sealed class StaticTvAnchor : MonoBehaviour
+        {
+            private Transform _target;
+            private Vector3 _localPosition;
+            private Quaternion _localRotation;
+            private Vector3 _localScale;
+            private Rigidbody[] _rigidbodies;
+
+            public void Capture(Transform target)
+            {
+                _target = target;
+                if (_target == null) return;
+
+                _localPosition = _target.localPosition;
+                _localRotation = _target.localRotation;
+                _localScale = _target.localScale;
+                _rigidbodies = _target.GetComponentsInChildren<Rigidbody>(true);
+            }
+
+            public void FreezeRigidbodies()
+            {
+                if (_rigidbodies == null) return;
+
+                for (int i = 0; i < _rigidbodies.Length; i++)
+                {
+                    var body = _rigidbodies[i];
+                    if (body == null) continue;
+
+                    body.velocity = Vector3.zero;
+                    body.angularVelocity = Vector3.zero;
+                    body.useGravity = false;
+                    body.isKinematic = true;
+                    body.constraints = RigidbodyConstraints.FreezeAll;
+                }
+            }
+
+            private void LateUpdate()
+            {
+                if (_target == null) return;
+
+                if (_target.localPosition != _localPosition)
+                    _target.localPosition = _localPosition;
+                if (_target.localRotation != _localRotation)
+                    _target.localRotation = _localRotation;
+                if (_target.localScale != _localScale)
+                    _target.localScale = _localScale;
+            }
         }
 
         // Screen Instance
