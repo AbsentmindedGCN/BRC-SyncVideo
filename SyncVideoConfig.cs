@@ -11,6 +11,8 @@ namespace SyncVideo
         public const string DefaultLobbyName = "Sync Video Lobby";
         public const bool LogBusMessages = false;
 
+        private const int ConfigVersion = 2;
+
         public ConfigEntry<string> TvObjectName { get; }
         public ConfigEntry<string> ScreenMaterialTextureName { get; }
         public ConfigEntry<float> HostBeaconInterval { get; }
@@ -41,6 +43,9 @@ namespace SyncVideo
 
         public SyncVideoConfig(ConfigFile config, ConfigFile advancedConfig, string pluginLocation)
         {
+            Migrate(config);
+            Migrate(advancedConfig);
+
             PluginDirectory = Path.GetDirectoryName(pluginLocation) ?? string.Empty;
             AdvancedConfigPath = advancedConfig.ConfigFilePath;
 
@@ -81,6 +86,28 @@ namespace SyncVideo
 
             advancedConfig.Save();
         }
+
+        private void Migrate(ConfigFile config)
+        {
+            var version = config.Bind("Config", "Version", 0, "Internal config version. Do not edit.");
+
+            if (version.Value < ConfigVersion)
+            {
+                try
+                {
+                    File.Delete(config.ConfigFilePath);
+                }
+                catch { }
+
+                config.Clear();
+
+                version = config.Bind("Config", "Version", ConfigVersion, "Internal config version. Do not edit.");
+                version.Value = ConfigVersion;
+
+                config.Save();
+            }
+        }
+
 
     }
 }

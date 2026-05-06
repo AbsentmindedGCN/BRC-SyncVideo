@@ -123,8 +123,11 @@ namespace SyncVideo.Runtime
 
                     using (var process = Process.Start(psi))
                     {
+                        var stderrCapture = new System.Text.StringBuilder();
+                        process.BeginErrorReadLine();
+                        process.ErrorDataReceived += (_, e) => { if (e.Data != null) stderrCapture.AppendLine(e.Data); };
                         string stdout = process.StandardOutput.ReadToEnd();
-                        string stderr = process.StandardError.ReadToEnd();
+                        string stderr = stderrCapture.ToString();
                         process.WaitForExit(20_000);
 
                         if (process.ExitCode != 0)
@@ -266,6 +269,7 @@ namespace SyncVideo.Runtime
                                     $" --ffmpeg-location \"{ffmpegDir}\"" +
                                     $" -f \"{BuildFormatWithFfmpeg(targetHeight)}\"" +
                                     $" --merge-output-format mp4" +
+                                    $" --postprocessor-args \"ffmpeg:-movflags +faststart\"" +
                                     $" -o \"{cachedFile}\"" +
                                     $" -- \"{originalUrl}\"",
                         UseShellExecute = false,
@@ -290,7 +294,12 @@ namespace SyncVideo.Runtime
                                 return;
                             }
 
-                            process.StandardOutput.ReadToEnd();
+                            // Drain stdout asynchronously — yt-dlp writes download progress to
+                            // stderr.  If we block on StandardOutput.ReadToEnd() first, the
+                            // stderr pipe buffer fills, yt-dlp stalls on its write, and stdout
+                            // is never closed, causing a classic two-pipe deadlock.
+                            process.BeginOutputReadLine();
+                            process.OutputDataReceived += (_, __) => { };  // discard; we only need exit code
                             string stderr = process.StandardError.ReadToEnd();
                             process.WaitForExit(300_000);
 
@@ -395,8 +404,11 @@ namespace SyncVideo.Runtime
                             return;
                         }
 
+                        var stderrCapture = new System.Text.StringBuilder();
+                        process.BeginErrorReadLine();
+                        process.ErrorDataReceived += (_, e) => { if (e.Data != null) stderrCapture.AppendLine(e.Data); };
                         string stdout = process.StandardOutput.ReadToEnd();
-                        string stderr = process.StandardError.ReadToEnd();
+                        string stderr = stderrCapture.ToString();
                         process.WaitForExit(30_000);
 
                         if (process.ExitCode != 0 || string.IsNullOrWhiteSpace(stdout))
@@ -741,8 +753,9 @@ namespace SyncVideo.Runtime
 
                     using (var process = Process.Start(psi))
                     {
+                        process.BeginErrorReadLine();
+                        process.ErrorDataReceived += (_, __) => { };
                         string stdout = process.StandardOutput.ReadToEnd().Trim();
-                        process.StandardError.ReadToEnd();
                         process.WaitForExit(15_000);
                         onTitle?.Invoke(string.IsNullOrEmpty(stdout) ? originalUrl : stdout);
                     }
@@ -784,8 +797,9 @@ namespace SyncVideo.Runtime
                     using (var process = Process.Start(psi))
                     {
 
+                        process.BeginErrorReadLine();
+                        process.ErrorDataReceived += (_, __) => { };
                         string stdout = process.StandardOutput.ReadToEnd();
-                        process.StandardError.ReadToEnd();
                         process.WaitForExit(15_000);
 
                         string title = originalUrl ?? string.Empty;
@@ -828,8 +842,9 @@ namespace SyncVideo.Runtime
 
                 using (var process = Process.Start(psi))
                 {
+                    process.BeginErrorReadLine();
+                    process.ErrorDataReceived += (_, __) => { };
                     string stdout = process.StandardOutput.ReadToEnd().Trim();
-                    process.StandardError.ReadToEnd();
                     process.WaitForExit(15_000);
                     return string.Equals(stdout, "True", StringComparison.OrdinalIgnoreCase);
                 }
@@ -983,13 +998,26 @@ namespace SyncVideo.Runtime
 
                     string rangeHeader = ctx.Request.Headers["Range"];
                     long start = 0;
-                    long end = fileLength - 1;
+                    long end   = fileLength - 1;
 
                     if (!string.IsNullOrEmpty(rangeHeader) && rangeHeader.StartsWith("bytes="))
                     {
-                        string[] parts = rangeHeader.Substring(6).Split('-');
-                        if (parts.Length >= 1 && long.TryParse(parts[0], out long s)) start = s;
-                        if (parts.Length >= 2 && long.TryParse(parts[1], out long e)) end = e;
+                        string spec    = rangeHeader.Substring("bytes=".Length);
+                        int    dashPos = spec.IndexOf('-');
+                        if (dashPos >= 0)
+                        {
+                            string startStr = spec.Substring(0, dashPos);
+                            string endStr   = spec.Substring(dashPos + 1);
+                            bool gotStart   = long.TryParse(startStr, out long sVal);
+                            bool gotEnd     = long.TryParse(endStr,   out long eVal);
+
+                            if (gotStart && gotEnd) { start = sVal; end = eVal; }              // "N-M"
+                            else if (gotStart)       { start = sVal; }                          // "N-"  open end
+                            else if (gotEnd)         { start = Math.Max(0L, fileLength - eVal); } // "-N" suffix range
+                        }
+                        // Always clamp to the real file bounds so Content-Length is never a lie
+                        end   = Math.Min(end, fileLength - 1);
+                        start = Math.Max(0L, Math.Min(start, end));
                         ctx.Response.StatusCode = 206;
                         ctx.Response.AddHeader("Content-Range", $"bytes {start}-{end}/{fileLength}");
                     }

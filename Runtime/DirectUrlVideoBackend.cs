@@ -102,7 +102,7 @@ namespace SyncVideo.Runtime
             _player.audioOutputMode = VideoAudioOutputMode.Direct;
             _player.EnableAudioTrack(0, true);
             _player.skipOnDrop = true;
-            _player.waitForFirstFrame = false;
+            _player.waitForFirstFrame = true;
             _player.prepareCompleted += OnPrepareCompleted;
             _player.errorReceived += OnErrorReceived;
             _player.loopPointReached += OnLoopPointReached;
@@ -312,10 +312,14 @@ namespace SyncVideo.Runtime
         {
             if (_player.isPrepared)
             {
+                // Pause, set time, then play
+                bool wasPlaying = _player.isPlaying;
+                if (wasPlaying) _player.Pause();
                 _player.time = Math.Max(0d, seconds);
                 _lastKnownTimeSeconds = Math.Max(0d, seconds);
                 _subtitleManager.ResetSearchHint();
-                if (!_player.isPlaying) UpdatePausedOverlay();
+                if (wasPlaying) _player.Play();
+                else UpdatePausedOverlay();
             }
         }
 

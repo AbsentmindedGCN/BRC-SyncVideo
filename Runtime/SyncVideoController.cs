@@ -218,9 +218,15 @@ namespace SyncVideo.Runtime
                 if (startTime <= 0.5d)
                     startTime = 0d;
 
-                _seekCooldownTimer = 5.0f;
-                _lastSeekTarget = startTime;
-                _backend.Seek(startTime);
+                // Guard against a fuck ton of sudden state packets
+                // Let the game finish processing waitForFirstFrame so it doesn't break and crash spectacularly
+                bool targetShifted = Math.Abs(startTime - _lastSeekTarget) > 5.0d;
+                if (_seekCooldownTimer <= 0f || targetShifted)
+                {
+                    _seekCooldownTimer = 5.0f;
+                    _lastSeekTarget = startTime;
+                    _backend.Seek(startTime);
+                }
 
                 if (!_backend.IsPlaying)
                     _backend.Play();
@@ -326,10 +332,8 @@ namespace SyncVideo.Runtime
 
             if (currentLobby != null && !currentLobby.IsPlaying)
             {
-                if (currentLobby.HasEnded || currentLobby.MediaTimeSeconds <= 0.05d || startTime <= 0.05d)
+                if (currentLobby.HasEnded || startTime <= 0.05d)
                     startTime = 0d;
-                else
-                    startTime = Math.Max(0d, currentLobby.MediaTimeSeconds);
             }
 
             _backend.Seek(startTime);

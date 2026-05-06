@@ -1003,6 +1003,9 @@ namespace SyncVideo.Runtime
             {
                 ResetFreshStateTracking(_lastCurrentLobbyId);
                 ActiveLobbyChanged?.Invoke(CurrentLobby);
+
+                if (CurrentLobby != null)
+                    HudManager.OnLobbyEnter();
             }
 
             TryApplyPendingStateForCurrentLobby();
