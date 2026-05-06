@@ -75,13 +75,13 @@ Navigate to "YouTube.com" and search for the channel "[Nerrel](https://www.youtu
 No, not currently. Twitch.tv streams are not supported, either.
 
 ### > I'm making a map. How can I make my map compatible with SyncVideo?
-Same way you would with [JasonOfTheStorm's VideoOnTV](https://thunderstore.io/c/bomb-rush-cyberfunk/p/jasonofthestorm/VideoOnTV/). Sync Video looks for Junk components named "TV". If it finds one, it creates a screen. When making a map, make any TV/screen object you want supported a Junk object and name it "TV" exactly. You can scale the size of the TV object to change the spawned screen size.
+Same way you would with [JasonOfTheStorm's VideoOnTV](https://thunderstore.io/c/bomb-rush-cyberfunk/p/jasonofthestorm/VideoOnTV/). Sync Video looks for objects in the Junk layer named "TV". If it finds one, it creates a screen at the object's origin. When making a map, make an object you want the screen to spawn on (I recommend a plane instead of a cube) and name it "TV" exactly, then set it to the "Junk" layer. You can scale the size of the TV object to change the spawned screen size.
 
 ### > Where are cached videos saved?
 When using FFmpeg, videos downloaded are temporarily saved inside your plugin folder's cache folder. They are automatically deleted when a new video is selected or the lobby closes.
 
 ### > Why can't I watch some MKVs?
-Because Micosoft is fucking garbage. Windows 11 removed H.265 HVEC code support by default, which is the most popular MKV codec, because they want YOU to pay for it.
+Because Micosoft is garbage. Windows 11 removed H.265 HVEC code support by default, which is the most popular MKV codec, because they want YOU to pay for it.
 Don't give them any money. [Install it yourself instead from CodecGuide](https://www.codecguide.com/media_foundation_codecs.htm) instead.
 I recommend downloading the [ZIP package containing all the installers](https://www.mediafire.com/file/301byh0e9ehxfc4/Media_Foundation_Codecs.zip/file) and installing all of them.
 
@@ -95,8 +95,11 @@ If you're a viewer, either give it a movement for the video to sync with the hos
 ### > Did this plugin mess up my BRC? Steam says it's still open but it's not!
 This happens occasionally if you close the game without giving it a second to close/shutdown everything, resulting in FFmpeg still open. To prevent this, leave the lobby before closing the game, then close the game from the main menu.
 
-### > There's an obstruction on my screen, possibly playing Shrek!
+### > There's a big white obstruction near the top of my screen!
 Uninstall [JasonOfTheStorm's VideoOnTV](https://thunderstore.io/c/bomb-rush-cyberfunk/p/jasonofthestorm/VideoOnTV/).
+
+### > My game crashed / I found a bug!
+Sorry about that!! Send me the BepInEx log and I'll look into it. I'm in the [Freesoul Discord](https://discord.com/invite/freesoulbrc).
 
 ---
 
