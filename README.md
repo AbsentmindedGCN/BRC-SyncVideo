@@ -5,6 +5,9 @@ The plugin supports YouTube videos, along with MP4, WebM, AVI, MOV, M4V, and mos
 **NOTE: IF YOU ARE ON WINDOWS 11, YOU PROBABLY WILL NEED TO [DOWNLOAD THE HEVC CODEC](https://codecguide.com/media_foundation_codecs.htm) TO WATCH MKV VIDEOS.**  
 Don't blame me, Microsoft is f-ing stupid and they want to sell you sh-t that came free with your f-ing ~~Xbox~~ Windows 10.
 
+**NOTE: IF YOU ARE ON LINUX, I RECOMMEND USING [PROTON GE RTSP](https://github.com/SpookySkeletons/proton-ge-rtsp), OTHERWISE YOU'LL GET STUCK SYNCING.** 
+This is an issue with how wine handels translating the codecs into Linux compatible calls.
+
 ## Features
 - Synchronized video playback, with a phone app that has intuitive play, pause, seek controls
 - Works off ACN's Lobby System, enabling "drop-in, drop-out" watch parties

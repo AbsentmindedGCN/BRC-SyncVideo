@@ -256,7 +256,18 @@ namespace SyncVideo.Runtime
                 _viewerCommandSyncingTimer = 0f;
 
                 if (drift >= 0.03d)
-                    _backend.Seek(target);
+                {
+                    // large drift guard
+                    if (drift < 1.0d || _seekCooldownTimer <= 0f)
+                    {
+                        if (drift >= 1.0d)
+                        {
+                            _seekCooldownTimer = 3.0f;
+                            _lastSeekTarget = target;
+                        }
+                        _backend.Seek(target);
+                    }
+                }
 
                 _backend.NudgeToward(current, 0d);
                 return;
@@ -645,10 +656,16 @@ namespace SyncVideo.Runtime
 
                 if (Math.Abs(_backend.CurrentTimeSeconds - expected) >= 0.03d)
                 {
-                    if (hostSeekChanged)
-                        SeekAndSetDirection(expected);
-                    else
-                        _backend.Seek(expected);
+                    bool targetShifted = Math.Abs(expected - _lastSeekTarget) > 5.0d;
+                    if (_seekCooldownTimer <= 0f || targetShifted)
+                    {
+                        _seekCooldownTimer = 3.0f;
+                        _lastSeekTarget = expected;
+                        if (hostSeekChanged)
+                            SeekAndSetDirection(expected);
+                        else
+                            _backend.Seek(expected);
+                    }
                 }
             }
             else

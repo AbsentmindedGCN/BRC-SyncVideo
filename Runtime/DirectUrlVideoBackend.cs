@@ -28,6 +28,8 @@ namespace SyncVideo.Runtime
         private readonly int _renderWidth;
         private readonly int _renderHeight;
         private readonly SubtitleManager _subtitleManager;
+        private readonly bool _useAudioSourceOutput;
+        private readonly List<AudioSource> _audioSources = new List<AudioSource>();
 
         private string _lastOriginalUrl = string.Empty;
         private string _subtitleSourceUrl = string.Empty;
@@ -73,6 +75,7 @@ namespace SyncVideo.Runtime
         {
             _logger = BepInEx.Logging.Logger.CreateLogSource("SyncVideo.DirectUrlVideoBackend");
             _subtitleManager = new SubtitleManager(_logger);
+            _useAudioSourceOutput = SyncVideoPlugin.Settings == null || SyncVideoPlugin.Settings.UseUnityAudioSource.Value;
 
             int defaultVolumePct = SyncVideoPlugin.Settings != null
                 ? SyncVideoPlugin.Settings.DefaultVolume.Value
@@ -99,7 +102,9 @@ namespace SyncVideo.Runtime
             _player.renderMode = VideoRenderMode.RenderTexture;
             _player.targetTexture = _texture;
             _player.aspectRatio = VideoAspectRatio.FitInside;
-            _player.audioOutputMode = VideoAudioOutputMode.Direct;
+            _player.audioOutputMode = _useAudioSourceOutput ? VideoAudioOutputMode.AudioSource : VideoAudioOutputMode.Direct;
+            if (_useAudioSourceOutput)
+                EnsureAudioSourceCount(1);
             _player.EnableAudioTrack(0, true);
             _player.skipOnDrop = true;
             _player.waitForFirstFrame = true;
@@ -108,6 +113,7 @@ namespace SyncVideo.Runtime
             _player.loopPointReached += OnLoopPointReached;
 
             _logger.LogInfo($"Using video render texture {_renderWidth}x{_renderHeight}.");
+            _logger.LogInfo($"Using video audio output mode {(_useAudioSourceOutput ? "AudioSource" : "Direct")}.");
         }
 
         private static void ParseRenderResolution(string configuredValue, out int width, out int height)
@@ -120,16 +126,16 @@ namespace SyncVideo.Runtime
             switch (raw)
             {
                 case "1920x1080": width = 1920; height = 1080; return;
-                case "1280x720":  width = 1280; height = 720;  return;
-                case "960x540":   width = 960;  height = 540;  return;
-                case "854x480":   width = 854;  height = 480;  return;
-                case "640x360":   width = 640;  height = 360;  return;
-                case "426x240":   width = 426;  height = 240;  return;
+                case "1280x720": width = 1280; height = 720; return;
+                case "960x540": width = 960; height = 540; return;
+                case "854x480": width = 854; height = 480; return;
+                case "640x360": width = 640; height = 360; return;
+                case "426x240": width = 426; height = 240; return;
             }
         }
 
         public bool IsPrepared => _player.isPrepared;
-        public bool IsPlaying  => _player.isPlaying;
+        public bool IsPlaying => _player.isPlaying;
         public double CurrentTimeSeconds => (_player.isPrepared || _player.isPlaying) ? _player.time : _lastKnownTimeSeconds;
         public object OutputTexture => _texture;
         public float LocalVolume => _volume;
@@ -228,28 +234,28 @@ namespace SyncVideo.Runtime
 
         public void Dispose()
         {
-            _player.prepareCompleted  -= OnPrepareCompleted;
-            _player.errorReceived     -= OnErrorReceived;
-            _player.loopPointReached  -= OnLoopPointReached;
+            _player.prepareCompleted -= OnPrepareCompleted;
+            _player.errorReceived -= OnErrorReceived;
+            _player.loopPointReached -= OnLoopPointReached;
             CancelAudioProbe();
             _subtitleManager.Clear();
             if (_texture != null) _texture.Release();
-            if (_root != null)    UnityEngine.Object.Destroy(_root);
-            if (_logger != null)  BepInEx.Logging.Logger.Sources.Remove(_logger);
+            if (_root != null) UnityEngine.Object.Destroy(_root);
+            if (_logger != null) BepInEx.Logging.Logger.Sources.Remove(_logger);
         }
 
         public void Load(string directPlayableUrl, string originalUrl, string videoId)
         {
             _lastOriginalUrl = originalUrl ?? string.Empty;
             _subtitleSourceUrl = ResolveSubtitleSourceUrl(directPlayableUrl, _lastOriginalUrl);
-            _lastVideoId     = videoId ?? string.Empty;
+            _lastVideoId = videoId ?? string.Empty;
             CurrentDirectUrl = directPlayableUrl ?? string.Empty;
             _lastKnownTimeSeconds = 0d;
             ResetAudioTrackCache();
             _selectedAudioTrack = 0;
 
-            _isAudioSwitching             = false;
-            _audioSwitchPendingSeek       = 0d;
+            _isAudioSwitching = false;
+            _audioSwitchPendingSeek = 0d;
             _audioSwitchPendingWasPlaying = false;
 
             Stop();
@@ -265,7 +271,7 @@ namespace SyncVideo.Runtime
 
             SetStatusOverlay(string.Empty);
             _player.source = VideoSource.Url;
-            _player.url    = directPlayableUrl;
+            _player.url = directPlayableUrl;
             ResetAudioRouting();
             ConfigureAudioTracks();
             _player.Prepare();
@@ -298,6 +304,7 @@ namespace SyncVideo.Runtime
         public void Stop()
         {
             if (_player.isPlaying || _player.isPrepared) _player.Stop();
+            StopAudioSources();
             _player.playbackSpeed = 1f;
             _lastKnownTimeSeconds = 0d;
             _isResolving = false;
@@ -411,9 +418,9 @@ namespace SyncVideo.Runtime
 
             _selectedAudioTrack = clamped;
 
-            _audioSwitchPendingSeek       = resumeTimeOverride ?? CurrentTimeSeconds;
+            _audioSwitchPendingSeek = resumeTimeOverride ?? CurrentTimeSeconds;
             _audioSwitchPendingWasPlaying = resumePlayingOverride ?? _player.isPlaying;
-            _isAudioSwitching             = true;
+            _isAudioSwitching = true;
 
             // Force a fresh prepare to fix silent audio channels
             if (_player.isPlaying || _player.isPrepared)
@@ -433,6 +440,7 @@ namespace SyncVideo.Runtime
         public void ShowEndedState(double seconds)
         {
             if (_player.isPlaying || _player.isPrepared) _player.Stop();
+            StopAudioSources();
             _player.playbackSpeed = 1f;
             _lastKnownTimeSeconds = Math.Max(_lastKnownTimeSeconds, seconds);
             ClearRenderTexture();
@@ -449,6 +457,27 @@ namespace SyncVideo.Runtime
             // set volume per track
             int trackCount = Math.Max(1, _knownAudioTrackCount);
             int selectedTrack = Mathf.Clamp(_selectedAudioTrack, 0, Math.Max(0, trackCount - 1));
+
+            if (_useAudioSourceOutput)
+            {
+                if (HasCachedAudioTracks())
+                {
+                    List<AudioTrackInfo> tracks = GetCachedAudioTracksSnapshot();
+                    EnsureAudioSourceCount(tracks.Count);
+                    for (int i = 0; i < tracks.Count; i++)
+                    {
+                        int unityIndex = tracks[i].UnityTrackIndex;
+                        if (unityIndex >= 0 && unityIndex < _audioSources.Count)
+                            _audioSources[unityIndex].volume = i == selectedTrack ? vol : 0f;
+                    }
+                    return;
+                }
+
+                EnsureAudioSourceCount(trackCount);
+                for (int i = 0; i < trackCount && i < _audioSources.Count; i++)
+                    _audioSources[i].volume = i == selectedTrack ? vol : 0f;
+                return;
+            }
 
             if (HasCachedAudioTracks())
             {
@@ -486,9 +515,9 @@ namespace SyncVideo.Runtime
                 ApplyAudioState();
 
                 _isAudioSwitching = false;
-                double seekTime  = _audioSwitchPendingSeek;
-                bool wasPlaying  = _audioSwitchPendingWasPlaying;
-                _audioSwitchPendingSeek       = 0d;
+                double seekTime = _audioSwitchPendingSeek;
+                bool wasPlaying = _audioSwitchPendingWasPlaying;
+                _audioSwitchPendingSeek = 0d;
                 _audioSwitchPendingWasPlaying = false;
 
                 if (seekTime > 0.05d)
@@ -512,7 +541,7 @@ namespace SyncVideo.Runtime
 
             if (!HasCachedAudioTracks())
                 _knownAudioTrackCount = Math.Max(1, (int)source.audioTrackCount);
-            _selectedAudioTrack   = Mathf.Clamp(_selectedAudioTrack, 0, Math.Max(0, _knownAudioTrackCount - 1));
+            _selectedAudioTrack = Mathf.Clamp(_selectedAudioTrack, 0, Math.Max(0, _knownAudioTrackCount - 1));
             ResetAudioRouting();
             ConfigureAudioTracks();
             ApplyAudioState();
@@ -526,6 +555,7 @@ namespace SyncVideo.Runtime
         {
             _logger.LogError("SyncVideo URL Video backend error: " + message);
             source.Stop();
+            StopAudioSources();
             source.playbackSpeed = 1f;
             SetStatusOverlay(UrlErrorMessage);
             ClearRenderTexture();
@@ -539,6 +569,7 @@ namespace SyncVideo.Runtime
 
             _lastKnownTimeSeconds = Math.Max(_lastKnownTimeSeconds, endedTime);
             source.Stop();
+            StopAudioSources();
             source.playbackSpeed = 1f;
             ClearRenderTexture();
             SetStatusOverlay(VideoEndedMessage);
@@ -558,12 +589,44 @@ namespace SyncVideo.Runtime
 
         private void ResetAudioRouting()
         {
+            if (_useAudioSourceOutput)
+                return;
+
             try
             {
                 _player.audioOutputMode = VideoAudioOutputMode.None;
                 _player.audioOutputMode = VideoAudioOutputMode.Direct;
             }
             catch { }
+        }
+
+        private void EnsureAudioSourceCount(int count)
+        {
+            if (!_useAudioSourceOutput)
+                return;
+
+            count = Math.Max(1, count);
+            while (_audioSources.Count < count)
+            {
+                var source = _root.AddComponent<AudioSource>();
+                source.playOnAwake = false;
+                source.loop = false;
+                source.spatialBlend = 0f;
+                source.volume = 0f;
+                _audioSources.Add(source);
+            }
+        }
+
+        private void StopAudioSources()
+        {
+            if (!_useAudioSourceOutput)
+                return;
+
+            for (int i = 0; i < _audioSources.Count; i++)
+            {
+                try { _audioSources[i].Stop(); }
+                catch { }
+            }
         }
 
         private void ConfigureAudioTracks()
@@ -577,27 +640,39 @@ namespace SyncVideo.Runtime
 
                 try { _player.controlledAudioTrackCount = (ushort)tracks.Count; }
                 catch { }
+                EnsureAudioSourceCount(tracks.Count);
 
                 for (int i = 0; i < tracks.Count; i++)
                 {
                     ushort unityIndex = (ushort)tracks[i].UnityTrackIndex;
                     try { _player.EnableAudioTrack(unityIndex, i == selectedTrack); }
                     catch { }
+                    if (_useAudioSourceOutput && unityIndex < _audioSources.Count)
+                    {
+                        try { _player.SetTargetAudioSource(unityIndex, _audioSources[unityIndex]); }
+                        catch { }
+                    }
                 }
 
                 AudioTrackInfo info = selectedTrack >= 0 && selectedTrack < tracks.Count ? tracks[selectedTrack] : null;
                 if (info != null)
                     // _logger.LogInfo($"[MKV Audio] Selected Audio Track {selectedTrack + 1}: ffprobe stream #{info.StreamIndex}, Unity track #{info.UnityTrackIndex}.");
-                return;
+                    return;
             }
 
             try { _player.controlledAudioTrackCount = (ushort)trackCount; }
             catch { }
+            EnsureAudioSourceCount(trackCount);
 
             for (int i = 0; i < trackCount; i++)
             {
                 try { _player.EnableAudioTrack((ushort)i, i == selectedTrack); }
                 catch { }
+                if (_useAudioSourceOutput && i < _audioSources.Count)
+                {
+                    try { _player.SetTargetAudioSource((ushort)i, _audioSources[i]); }
+                    catch { }
+                }
             }
         }
 
@@ -794,12 +869,12 @@ namespace SyncVideo.Runtime
             var result = new List<AudioTrackInfo>();
             var psi = new ProcessStartInfo
             {
-                FileName  = ffmpegPath,
+                FileName = ffmpegPath,
                 Arguments = "-probesize 10000000 -analyzeduration 10000000 -i " + QuoteArg(url) + " -hide_banner",
-                RedirectStandardError  = true,
+                RedirectStandardError = true,
                 RedirectStandardOutput = true,
-                UseShellExecute  = false,
-                CreateNoWindow   = true
+                UseShellExecute = false,
+                CreateNoWindow = true
             };
 
             using (var proc = new Process { StartInfo = psi })
@@ -842,9 +917,9 @@ namespace SyncVideo.Runtime
 
                             currentAudio = new AudioTrackInfo
                             {
-                                StreamIndex     = streamIdx,
+                                StreamIndex = streamIdx,
                                 UnityTrackIndex = result.Count,
-                                Language        = lang
+                                Language = lang
                             };
                         }
                         continue;

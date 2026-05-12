@@ -1,7 +1,10 @@
 using BepInEx.Configuration;
 using Reptile;
 using System;
+using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Text;
 
 namespace SyncVideo
@@ -11,7 +14,8 @@ namespace SyncVideo
         public const string DefaultLobbyName = "Sync Video Lobby";
         public const bool LogBusMessages = false;
 
-        private const int ConfigVersion = 2;
+        private const int ConfigVersion = 5;
+        private const string ConfigVersionMarker = "SyncVideoConfigVersion";
 
         public ConfigEntry<string> TvObjectName { get; }
         public ConfigEntry<string> ScreenMaterialTextureName { get; }
@@ -32,6 +36,7 @@ namespace SyncVideo
         public ConfigEntry<bool> EnableMkvSupport { get; }
         public ConfigEntry<bool> SuppressAFK { get; }
         public ConfigEntry<bool> MuteMusicAndAmbient { get; }
+        public ConfigEntry<bool> UseUnityAudioSource { get; }
         public ConfigEntry<bool> EnableMkvFfmpegConversion { get; }
         public ConfigEntry<bool> MkvTranscodeToH264 { get; }
         public ConfigEntry<float> YouTubeVolumeScale { get; }
@@ -43,14 +48,14 @@ namespace SyncVideo
 
         public SyncVideoConfig(ConfigFile config, ConfigFile advancedConfig, string pluginLocation)
         {
-            Migrate(config);
-            Migrate(advancedConfig);
+            bool configMigrated = Migrate(config);
+            bool advancedConfigMigrated = Migrate(advancedConfig);
 
             PluginDirectory = Path.GetDirectoryName(pluginLocation) ?? string.Empty;
             AdvancedConfigPath = advancedConfig.ConfigFilePath;
 
             EnableOfflineMode = config.Bind("Offline Mode", "EnableOfflineMode", false, "Disable all online functionality when enabled. Create local lobbies for personal use.");
-            
+
             HideNativeLobbyUi = config.Bind("ACN", "Hide Lobby UI", true, "Hide ACN's lobby UI by default.");
             SuppressAFK = config.Bind("ACN", "Suppress AFK", true, "Hide AFK animations for yourself and other players while in a Sync Video lobby.");
 
@@ -59,7 +64,7 @@ namespace SyncVideo
             YouTubeStreamResolution = config.Bind("Video", "YouTube Resolution", "1280x720", "Resolution used when streaming YouTube videos. Options: 1920x1080, 1280x720, 960x540, 854x480, 640x360, 426x240.");
             UseFFmpeg = config.Bind("Video", "Use FFmpeg", false, "Enable FFmpeg for higher quality YouTube video playback. Requires ffmpeg.exe to be placed in the plugin folder, next to SyncVideo.dll. When disabled, stream videos without downloading.");
             EnableMkvSupport = config.Bind("Video", "MKV Support", true, "Enable experimental MKV playback support. An MKV Settings menu for the host will appear in the app when an MKV file is loaded.");
-            SubtitleFontSize = config.Bind("Video", "Subtitle Font Size", 34f, "Font size for MKV subtitles displayed on the TV screen. Default is 34.");            
+            SubtitleFontSize = config.Bind("Video", "Subtitle Font Size", 34f, "Font size for MKV subtitles displayed on the TV screen. Default is 34.");
 
             DefaultVolume = config.Bind("Volume", "Default Volume", 90, "Starting volume level (0–100). Automatically rounds to increments of 10 in-game.");
             MuteMusicAndAmbient = config.Bind("Volume", "Mute Music and Ambient SFX", true, "Mute the game's music and ambient sounds while in a Sync Video lobby.");
@@ -72,6 +77,7 @@ namespace SyncVideo
             AutoAttachToTVsOnStageLoad = advancedConfig.Bind("Debug", "Auto Attach To TVs On Load", true, "Automatically bind screens to matching TV objects when a map loads.");
             ShowRefreshScreensButton = advancedConfig.Bind("Debug", "Refresh Screens Button", false, "Show the Refresh Screens button in the phone app. Rebinds screens to objects.");
             YouTubeVolumeScale = advancedConfig.Bind("Debug", "YouTube Volume Scale", 1.0f, "Volume multiplier applied to YouTube videos (0.0-1.0). Makes YouTube videos not kill your ears.");
+            UseUnityAudioSource = advancedConfig.Bind("Debug", "Unity AudioSource", false, "Use Unity AudioSource output for video audio instead of Direct output. Slightly higher latency, but can prevent video/audio offset.");
 
             EnableMkvFfmpegConversion = advancedConfig.Bind("Experimental", "MKV To MP4 Conversion", false, "When enabled, MKV files are converted into MP4 with FFmpeg. This re-muxes the MKV to fix container issues for MKVs using the H.264 codec.");
             MkvTranscodeToH264 = advancedConfig.Bind("Experimental", "Transcode MKV to H.264", false, "Transcodes the video to H.264 instead of using the MKV's codec. Required for H.265/HEVC, VP9, AV1, and 10-bit H.264 sources. Will be very slow.");
@@ -84,28 +90,198 @@ namespace SyncVideo
 
             // LogBusMessages = advancedConfig.Bind("Debug", "LogBusMessages", false, "Writes every hidden chat bus message to the log.");
 
-            advancedConfig.Save();
+            if (configMigrated)
+                SaveCleanConfig(config);
+            else
+                config.Save();
+
+            if (advancedConfigMigrated)
+                SaveCleanConfig(advancedConfig);
+            else
+                advancedConfig.Save();
         }
 
-        private void Migrate(ConfigFile config)
+        private bool Migrate(ConfigFile config)
         {
-            var version = config.Bind("Config", "Version", 0, "Internal config version. Do not edit.");
+            int version = ReadConfigVersion(config.ConfigFilePath);
+            if (version >= ConfigVersion)
+                return false;
 
-            if (version.Value < ConfigVersion)
+            bool saveOnConfigSet = config.SaveOnConfigSet;
+            config.SaveOnConfigSet = false;
+
+            try
             {
+                config.Clear();
+                ClearOrphanedEntries(config);
+
                 try
                 {
                     File.Delete(config.ConfigFilePath);
                 }
                 catch { }
+            }
+            finally
+            {
+                config.SaveOnConfigSet = saveOnConfigSet;
+            }
 
-                config.Clear();
+            return true;
+        }
 
-                version = config.Bind("Config", "Version", ConfigVersion, "Internal config version. Do not edit.");
-                version.Value = ConfigVersion;
+        private int ReadConfigVersion(string path)
+        {
+            try
+            {
+                if (!File.Exists(path))
+                    return 0;
 
+                string currentSection = string.Empty;
+                foreach (var rawLine in File.ReadAllLines(path))
+                {
+                    string line = rawLine.Trim();
+
+                    if (line.StartsWith("## " + ConfigVersionMarker, StringComparison.OrdinalIgnoreCase)
+                     || line.StartsWith("# " + ConfigVersionMarker, StringComparison.OrdinalIgnoreCase))
+                    {
+                        int separator = line.IndexOf('=');
+                        if (separator >= 0 && int.TryParse(line.Substring(separator + 1).Trim(), out int markerVersion))
+                            return markerVersion;
+                    }
+
+                    if (line.Length > 2 && line[0] == '[' && line[line.Length - 1] == ']')
+                    {
+                        currentSection = line.Substring(1, line.Length - 2).Trim();
+                        continue;
+                    }
+
+                    if (string.Equals(currentSection, "Config", StringComparison.OrdinalIgnoreCase)
+                     && line.StartsWith("Version", StringComparison.OrdinalIgnoreCase))
+                    {
+                        int separator = line.IndexOf('=');
+                        if (separator >= 0 && int.TryParse(line.Substring(separator + 1).Trim(), out int oldVersion))
+                            return Math.Min(oldVersion, ConfigVersion - 1);
+                    }
+                }
+            }
+            catch { }
+
+            return 0;
+        }
+
+        private void SaveCleanConfig(ConfigFile config)
+        {
+            try
+            {
+                string directory = Path.GetDirectoryName(config.ConfigFilePath);
+                if (!string.IsNullOrEmpty(directory))
+                    Directory.CreateDirectory(directory);
+
+                var sections = new List<string>();
+                var entriesBySection = new Dictionary<string, List<ConfigEntryBase>>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var definition in config.Keys)
+                {
+                    if (definition == null)
+                        continue;
+
+                    ConfigEntryBase entry = null;
+                    try { entry = config[definition]; } catch { }
+                    if (entry == null)
+                        continue;
+
+                    string section = definition.Section ?? string.Empty;
+                    if (!entriesBySection.TryGetValue(section, out var entries))
+                    {
+                        entries = new List<ConfigEntryBase>();
+                        entriesBySection[section] = entries;
+                        sections.Add(section);
+                    }
+
+                    entries.Add(entry);
+                }
+
+                using (var writer = new StreamWriter(config.ConfigFilePath, false, new UTF8Encoding(false)))
+                {
+                    writer.WriteLine("## " + ConfigVersionMarker + " = " + ConfigVersion.ToString(CultureInfo.InvariantCulture));
+                    writer.WriteLine();
+
+                    foreach (var section in sections)
+                    {
+                        writer.WriteLine("[" + section + "]");
+
+                        foreach (var entry in entriesBySection[section])
+                        {
+                            string description = entry.Description?.Description;
+                            if (!string.IsNullOrEmpty(description))
+                            {
+                                foreach (var descriptionLine in description.Replace("\r\n", "\n").Split('\n'))
+                                    writer.WriteLine("## " + descriptionLine);
+                            }
+
+                            writer.WriteLine(entry.Definition.Key + " = " + GetConfigValueString(entry));
+                            writer.WriteLine();
+                        }
+                    }
+                }
+            }
+            catch
+            {
                 config.Save();
             }
+        }
+
+        private string GetConfigValueString(ConfigEntryBase entry)
+        {
+            try
+            {
+                if (entry.BoxedValue == null)
+                    return string.Empty;
+
+                if (entry.BoxedValue is IFormattable formattable)
+                    return formattable.ToString(null, CultureInfo.InvariantCulture);
+
+                return entry.BoxedValue.ToString();
+            }
+            catch
+            {
+                return string.Empty;
+            }
+        }
+
+        private void ClearOrphanedEntries(ConfigFile config)
+        {
+            var flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
+            try
+            {
+                foreach (var property in config.GetType().GetProperties(flags))
+                {
+                    if (property.Name.IndexOf("orphan", StringComparison.OrdinalIgnoreCase) < 0)
+                        continue;
+
+                    try
+                    {
+                        var value = property.GetValue(config, null);
+                        value?.GetType().GetMethod("Clear", flags)?.Invoke(value, null);
+                    }
+                    catch { }
+                }
+
+                foreach (var field in config.GetType().GetFields(flags))
+                {
+                    if (field.Name.IndexOf("orphan", StringComparison.OrdinalIgnoreCase) < 0)
+                        continue;
+
+                    try
+                    {
+                        var value = field.GetValue(config);
+                        value?.GetType().GetMethod("Clear", flags)?.Invoke(value, null);
+                    }
+                    catch { }
+                }
+            }
+            catch { }
         }
 
 
