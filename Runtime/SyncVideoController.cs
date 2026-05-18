@@ -23,6 +23,7 @@ namespace SyncVideo.Runtime
 
         private float _seekCooldownTimer; // Post-seek cooldown to prevent the Tick from re-seeking while Unity is still buffering
         private double _lastSeekTarget = double.MinValue;
+        private float _hostCommandCooldown; // Host cooldown, stop pressing damn buttons so fast
         private string _lastLoadedLobbyUrl = string.Empty;
         private string _lastLoadedVideoId = string.Empty;
         private string _pendingLoadLobbyUrl = string.Empty;
@@ -187,6 +188,9 @@ namespace SyncVideo.Runtime
             if (_seekCooldownTimer > 0f)
                 _seekCooldownTimer = Math.Max(0f, _seekCooldownTimer - deltaTime);
 
+            if (_hostCommandCooldown > 0f)
+                _hostCommandCooldown = Math.Max(0f, _hostCommandCooldown - deltaTime);
+
             var lobby = _lobbyManager.CurrentLobby;
             if (lobby == null)
             {
@@ -338,6 +342,11 @@ namespace SyncVideo.Runtime
             if (!_lobbyManager.IsHost)
                 return;
 
+            if (_hostCommandCooldown > 0f)
+                return;
+
+            _hostCommandCooldown = 0.5f;
+
             var currentLobby = _lobbyManager.CurrentLobby;
             var startTime = _backend.CurrentTimeSeconds;
 
@@ -359,6 +368,11 @@ namespace SyncVideo.Runtime
             if (!_lobbyManager.IsHost)
                 return;
 
+            if (_hostCommandCooldown > 0f)
+                return;
+
+            _hostCommandCooldown = 0.5f;
+
             _backend.Pause();
             _lobbyManager.SetPlayback(false);
             SyncVideoPlugin.ScreenManager?.OnPlaybackStateChanged(false, _backend.CurrentTimeSeconds);
@@ -368,6 +382,11 @@ namespace SyncVideo.Runtime
         {
             if (!_lobbyManager.IsHost)
                 return;
+
+            if (_hostCommandCooldown > 0f)
+                return;
+
+            _hostCommandCooldown = 0.5f;
 
             var currentLobby = _lobbyManager.CurrentLobby;
             if (currentLobby != null && currentLobby.HasEnded)
@@ -379,6 +398,29 @@ namespace SyncVideo.Runtime
 
             var isPlaying = _lobbyManager.CurrentLobby != null && _lobbyManager.CurrentLobby.IsPlaying;
             SyncVideoPlugin.ScreenManager?.OnPlaybackStateChanged(isPlaying, _backend.CurrentTimeSeconds);
+        }
+
+        public double VideoDurationSeconds => _backend.DurationSeconds;
+
+        public void HostSeekToTime(double seconds)
+        {
+            if (!_lobbyManager.IsHost)
+                return;
+
+            if (_hostCommandCooldown > 0f)
+                return;
+
+            _hostCommandCooldown = 0.5f;
+
+            var currentLobby = _lobbyManager.CurrentLobby;
+            if (currentLobby != null && currentLobby.HasEnded)
+                return;
+
+            _backend.Seek(seconds);
+            _lobbyManager.SeekToAbsolute(seconds);
+
+            var isPlaying = _lobbyManager.CurrentLobby != null && _lobbyManager.CurrentLobby.IsPlaying;
+            SyncVideoPlugin.ScreenManager?.OnPlaybackStateChanged(isPlaying, seconds);
         }
 
         public void HostRestart()
@@ -468,6 +510,7 @@ namespace SyncVideo.Runtime
             _pendingLoadVideoId = string.Empty;
             _seekCooldownTimer = 0f;
             _lastSeekTarget = double.MinValue;
+            _hostCommandCooldown = 0f;
             _lastAppliedAudioTrack = int.MinValue;
             _lastAppliedSubtitleTrack = int.MinValue;
             _viewerLocalTrackOverride = false;

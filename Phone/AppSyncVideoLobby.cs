@@ -1,4 +1,5 @@
 using CommonAPI.Phone;
+using System;
 using System.Reflection;
 using System.Text;
 using SyncVideo.Runtime;
@@ -384,6 +385,71 @@ namespace SyncVideo.Phone
                 : "Mute / Unmute";
         }
 
+        // Format a duration in seconds as H:MM:SS (>=1 hour) or M:SS
+        private static string FormatVideoTime(double totalSeconds)
+        {
+            int t = (int)Math.Max(0d, totalSeconds);
+            int h = t / 3600;
+            int m = (t % 3600) / 60;
+            int s = t % 60;
+            return h > 0
+                ? $"{h}:{m:D2}:{s:D2}"
+                : $"{m}:{s:D2}";
+        }
+
+        // Parse H:MM:SS, MM:SS, or plain seconds. Returns false if the string is not a valid non-negative time.
+        private static bool TryParseTimeInput(string input, out double seconds)
+        {
+            seconds = 0d;
+            if (string.IsNullOrWhiteSpace(input))
+                return false;
+
+            string[] parts = input.Trim().Split(':');
+            try
+            {
+                if (parts.Length == 1)
+                {
+                    if (!double.TryParse(parts[0],
+                        System.Globalization.NumberStyles.Any,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out double sec) || sec < 0d)
+                        return false;
+                    seconds = sec;
+                    return true;
+                }
+                else if (parts.Length == 2)
+                {
+                    // MM:SS
+                    if (!int.TryParse(parts[0], out int min) || min < 0)
+                        return false;
+                    if (!double.TryParse(parts[1],
+                        System.Globalization.NumberStyles.Any,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out double sec) || sec < 0d)
+                        return false;
+                    seconds = min * 60d + sec;
+                    return true;
+                }
+                else if (parts.Length == 3)
+                {
+                    // H:MM:SS
+                    if (!int.TryParse(parts[0], out int hrs) || hrs < 0)
+                        return false;
+                    if (!int.TryParse(parts[1], out int min) || min < 0)
+                        return false;
+                    if (!double.TryParse(parts[2],
+                        System.Globalization.NumberStyles.Any,
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        out double sec) || sec < 0d)
+                        return false;
+                    seconds = hrs * 3600d + min * 60d + sec;
+                    return true;
+                }
+            }
+            catch { }
+            return false;
+        }
+
         private static void TrySetButtonLabel(object button, string label)
         {
             if (button == null || string.IsNullOrEmpty(label))
@@ -518,7 +584,7 @@ namespace SyncVideo.Phone
                                         if (SyncVideoPlugin.LobbyManager.QueueHostUrl(normalized, string.IsNullOrWhiteSpace(title) ? normalized : title))
                                             UrlPromptOverlay.ShowConfirmation("<color=green>Added to queue!</color>\n\n<size=75%>Press left arrow key to go back.</size>");
                                         else
-                                            UrlPromptOverlay.ShowConfirmation("URL Error!\n\n<size=75%>Press left arrow key to go back.</size>");
+                                            UrlPromptOverlay.ShowConfirmation("<color=red>URL Error!</color>\n\n<size=75%>Press left arrow key to go back.</size>");
                                     });
                                 },
                                 errorMessage =>
@@ -641,6 +707,44 @@ namespace SyncVideo.Phone
                 var forward = PhoneUIUtility.CreateSimpleButton("Seek >> 5 sec");
                 forward.OnConfirm += () => SyncVideoPlugin.SyncController.HostSeekRelative(5d);
                 ScrollView.AddButton(forward);
+
+                var seekToTime = PhoneUIUtility.CreateSimpleButton("Seek to Time...");
+                seekToTime.OnConfirm += () =>
+                {
+                    string currentTimePlaceholder = FormatVideoTime(SyncVideoPlugin.SyncController.Backend.CurrentTimeSeconds);
+                    UrlPromptOverlay.Show(input =>
+                    {
+                        if (!TryParseTimeInput(input, out double requestedSeconds))
+                        {
+                            UrlPromptOverlay.ShowConfirmation("<color=red>Invalid time!</color>\n\n<size=75%>Press left arrow key to go back.</size>");
+                            return;
+                        }
+
+                        double dur = SyncVideoPlugin.SyncController.VideoDurationSeconds;
+                        if (dur <= 0d || requestedSeconds < 0d || requestedSeconds > dur - 3d)
+                        {
+                            string message;
+
+                            if (dur > 0d)
+                            {
+                                message = "<color=red>Invalid time!</color>\n\n" + $"<size=75%>Valid range: 0:00 - {FormatVideoTime(dur - 3d)}</size>\n\n" + "<size=75%>Press left arrow key to go back.</size>";
+                            }
+                            else
+                            {
+                                message = "<color=red>No video loaded!</color>\n\n" + "<size=75%>Press left arrow key to go back.</size>";
+                            }
+
+                            UrlPromptOverlay.ShowConfirmation(message);
+                            return;
+                        }
+
+                        SyncVideoPlugin.SyncController.HostSeekToTime(requestedSeconds);
+                    }, false,
+                        "Seek to Time",
+                        "Enter the specific time you want to seek to.\nType \"4:20\" to seek four minutes and twenty seconds in.\n\nPress left arrow key to cancel.",
+                        "Current Video Time: " + currentTimePlaceholder);
+                };
+                ScrollView.AddButton(seekToTime);
             }
 
             if (SyncVideoPlugin.Settings.ShowScreenPositionMenu.Value)

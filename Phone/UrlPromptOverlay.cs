@@ -26,6 +26,9 @@ namespace SyncVideo.Phone
         private static float _suppressPhoneNavigationUntil = -1f;
         private static bool _showAsViewerSuggestion;
         private bool _cancelInputWasDown;
+        private string _SeekToTitle;
+        private string _SeekToHelpText;
+        private string _SeekToPlaceholder;
 
         public static bool IsVisible => _instance != null && _instance.gameObject.activeSelf;
         public static bool IsConfirmation { get; private set; }
@@ -82,7 +85,8 @@ namespace SyncVideo.Phone
             }
         }
 
-        public static void Show(Action<string> onSubmit, bool showAsViewerSuggestion = false)
+        public static void Show(Action<string> onSubmit, bool showAsViewerSuggestion = false,
+            string customTitle = null, string customHelpText = null, string customPlaceholder = null)
         {
             EnsureInstance();
 
@@ -90,12 +94,15 @@ namespace SyncVideo.Phone
             _showAsViewerSuggestion = showAsViewerSuggestion && !IsCurrentUserHost();
             _instance._onSubmit = onSubmit;
             _instance._cancelInputWasDown = true;
+            _instance._SeekToTitle = customTitle;
+            _instance._SeekToHelpText = customHelpText;
+            _instance._SeekToPlaceholder = customPlaceholder;
             _instance.gameObject.SetActive(true);
             EnableMouseForOverlay();
             _instance.ApplyPromptLayout();
             _instance.UpdateHelpText();
             _instance.ApplyGameFontToOverlay();
-            _instance._input.text = GetClipboardText();
+            _instance._input.text = customPlaceholder != null ? string.Empty : GetClipboardText();
             _instance._input.caretPosition = _instance._input.text.Length;
             _instance._input.Select();
             _instance._input.ActivateInputField();
@@ -125,6 +132,9 @@ namespace SyncVideo.Phone
 
             IsConfirmation = false;
             _showAsViewerSuggestion = false;
+            _instance._SeekToTitle = null;
+            _instance._SeekToHelpText = null;
+            _instance._SeekToPlaceholder = null;
             _suppressPhoneNavigationUntil = UnityEngine.Time.unscaledTime + 0.2f;
             _instance._cancelInputWasDown = false;
             RestoreMouseAfterOverlay();
@@ -353,8 +363,14 @@ namespace SyncVideo.Phone
 
             if (_titleText != null)
             {
-                _titleText.text = "Submit URL";
+                _titleText.text = _SeekToTitle ?? "Submit URL";
                 _titleText.gameObject.SetActive(true);
+            }
+
+            if (_SeekToHelpText != null)
+            {
+                _helpText.text = _SeekToHelpText;
+                return;
             }
 
             _helpText.text = _showAsViewerSuggestion
@@ -375,7 +391,7 @@ namespace SyncVideo.Phone
 
             if (_titleText != null)
             {
-                _titleText.text = "Submit URL";
+                _titleText.text = _SeekToTitle ?? "Submit URL";
                 _titleText.gameObject.SetActive(true);
             }
 
@@ -393,6 +409,10 @@ namespace SyncVideo.Phone
 
             if (_confirmationText != null)
                 _confirmationText.gameObject.SetActive(false);
+
+            // Apply custom placeholder or restore the default example URL
+            if (_input?.placeholder is TextMeshProUGUI phText)
+                phText.text = _SeekToPlaceholder ?? "https://www.youtube.com/watch?v=k9jNqmC211c";
         }
 
         private void ApplyConfirmationLayout(string message)

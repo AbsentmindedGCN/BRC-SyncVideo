@@ -137,6 +137,7 @@ namespace SyncVideo.Runtime
         public bool IsPrepared => _player.isPrepared;
         public bool IsPlaying => _player.isPlaying;
         public double CurrentTimeSeconds => (_player.isPrepared || _player.isPlaying) ? _player.time : _lastKnownTimeSeconds;
+        public double DurationSeconds => _player.isPrepared ? _player.length : 0d;
         public object OutputTexture => _texture;
         public float LocalVolume => _volume;
         public bool IsMuted => _isMuted;

@@ -787,6 +787,40 @@ namespace SyncVideo.Runtime
             }
         }
 
+        // Seek to an explicit absolute position — used by host Seek To Time
+        public void SeekToAbsolute(double seconds)
+        {
+            if (!IsHost || CurrentLobby == null)
+                return;
+
+            if (CurrentLobby.HasEnded || _hostShadow.HasEnded)
+                return;
+
+            _hostShadow.IsSyncVideoLobby    = true;
+            _hostShadow.MediaTimeSeconds    = Math.Max(0d, seconds);
+            _hostShadow.HasEnded            = false;
+            _hostShadow.Revision++;
+            _hostShadow.SeekRevision++;
+            _hostShadow.HostUnixMilliseconds = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+
+            CurrentLobby.MediaTimeSeconds    = _hostShadow.MediaTimeSeconds;
+            CurrentLobby.HasEnded            = _hostShadow.HasEnded;
+            CurrentLobby.Revision            = _hostShadow.Revision;
+            CurrentLobby.SeekRevision        = _hostShadow.SeekRevision;
+            CurrentLobby.HostUnixMilliseconds = _hostShadow.HostUnixMilliseconds;
+
+            if (_offlineLobbyActive)
+            {
+                UpdateOfflineLobbySnapshot(false, true);
+            }
+            else
+            {
+                BroadcastStatePacket();
+                PushHostShadowToNativeLobby();
+                ActiveStateChanged?.Invoke(CurrentLobby);
+            }
+        }
+
         public void NotifyPlaybackEnded(double seconds)
         {
             if (!IsHost || CurrentLobby == null)
@@ -1135,6 +1169,12 @@ namespace SyncVideo.Runtime
             if (CurrentLobby.HostId != 0 && statePacket.SenderPlayerId != 0 && statePacket.SenderPlayerId != CurrentLobby.HostId)
                 return;
 
+            // Drop packets with an older host timestamp — out-of-order delivery must not revert newer state
+            if (statePacket.HostUnixMilliseconds > 0
+                && CurrentLobby.HostUnixMilliseconds > 0
+                && statePacket.HostUnixMilliseconds < CurrentLobby.HostUnixMilliseconds)
+                return;
+
             _requestedStateLobbyId = CurrentLobby.LobbyId;
             _receivedFreshStateForCurrentLobby = true;
             _stateRequestRetryTimer = 0f;
@@ -1187,6 +1227,12 @@ namespace SyncVideo.Runtime
                 return;
 
             if (CurrentLobby.HostId != 0 && statePacket.SenderPlayerId != 0 && statePacket.SenderPlayerId != CurrentLobby.HostId)
+                return;
+
+            // Drop packets with an older host timestamp — out-of-order delivery must not revert newer state
+            if (statePacket.HostUnixMilliseconds > 0
+                && CurrentLobby.HostUnixMilliseconds > 0
+                && statePacket.HostUnixMilliseconds < CurrentLobby.HostUnixMilliseconds)
                 return;
 
             _requestedStateLobbyId = CurrentLobby.LobbyId;
