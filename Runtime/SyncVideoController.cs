@@ -24,6 +24,17 @@ namespace SyncVideo.Runtime
         private float _seekCooldownTimer; // Post-seek cooldown to prevent the Tick from re-seeking while Unity is still buffering
         private double _lastSeekTarget = double.MinValue;
         private float _hostCommandCooldown; // Host cooldown, stop pressing damn buttons so fast
+
+        private double _hostStallCheckTime = 0d; // Host stall detection and auto-reconnect
+        private float _hostStallTimer = 0f;
+        private bool _hostIsStalled = false;
+        private double _hostReconnectResumeTime = 0d;
+        private float _hostReconnectBufferTimer = 0f;
+        private const float HostStallDetectSeconds = 3.5f;
+        private const float HostReconnectBufferSeconds = 1.5f;
+        private double _viewerLastSeenHostMediaTime = -1d;
+        private float _viewerHostFrozenTimer = 0f;
+        
         private string _lastLoadedLobbyUrl = string.Empty;
         private string _lastLoadedVideoId = string.Empty;
         private string _pendingLoadLobbyUrl = string.Empty;
@@ -202,8 +213,57 @@ namespace SyncVideo.Runtime
             {
                 _viewerCommandSyncingTimer = 0f;
 
+                // Once the timer lapses resume
+                if (_hostReconnectBufferTimer > 0f)
+                {
+                    _hostReconnectBufferTimer = Math.Max(0f, _hostReconnectBufferTimer - deltaTime);
+                    if (_hostReconnectBufferTimer <= 0f)
+                    {
+                        double resumeNow = _backend.CurrentTimeSeconds;
+                        _hostStallCheckTime = resumeNow;
+                        _hostStallTimer = 0f;
+                        _lobbyManager.SetObservedPlaybackTime(resumeNow);
+                        _lobbyManager.SetPlayback(true);
+                        SyncVideoPlugin.ScreenManager?.OnPlaybackStateChanged(true, resumeNow);
+                        StateChanged?.Invoke(MakeState(_lobbyManager.CurrentLobby));
+                    }
+                    _lastRemotePlaying = lobby.IsPlaying;
+                    return;
+                }
+
                 if (lobby.IsPlaying)
-                    _lobbyManager.SetObservedPlaybackTime(_backend.CurrentTimeSeconds);
+                {
+                    double currentTime = _backend.CurrentTimeSeconds;
+                    _lobbyManager.SetObservedPlaybackTime(currentTime);
+
+                    if (!_hostIsStalled)
+                    {
+                        // Stall detection
+                        if (!_backend.IsPlaying || Math.Abs(currentTime - _hostStallCheckTime) < 0.05d)
+                        {
+                            _hostStallTimer += deltaTime;
+                            if (_hostStallTimer >= HostStallDetectSeconds)
+                            {
+                                _hostReconnectResumeTime = currentTime;
+                                _hostIsStalled = true; // PAUSE AND RELOAD
+                                _hostStallTimer = 0f;
+                                _lobbyManager.SetPlayback(false);
+                                SyncVideoPlugin.ScreenManager?.OnPlaybackStateChanged(false, currentTime);
+                                _backend.ReloadCurrent();
+                            }
+                        }
+                        else
+                        {
+                            _hostStallCheckTime = currentTime;
+                            _hostStallTimer = 0f;
+                        }
+                    }
+                }
+                else if (!_hostIsStalled)
+                {
+                    _hostStallTimer = 0f;
+                    _hostStallCheckTime = _backend.CurrentTimeSeconds;
+                }
 
                 _lastRemotePlaying = lobby.IsPlaying;
                 return;
@@ -221,6 +281,9 @@ namespace SyncVideo.Runtime
                 var startTime = GetExpectedTime(lobby);
                 if (startTime <= 0.5d)
                     startTime = 0d;
+
+                _viewerLastSeenHostMediaTime = lobby.MediaTimeSeconds;
+                _viewerHostFrozenTimer = 0f;
 
                 // Guard against a fuck ton of sudden state packets
                 // Let the game finish processing waitForFirstFrame so it doesn't break and crash spectacularly
@@ -241,6 +304,7 @@ namespace SyncVideo.Runtime
             if (justStoppedPlaying)
             {
                 _viewerCommandSyncingTimer = 0f;
+                _viewerHostFrozenTimer = 0f;
 
                 if (_backend.IsPlaying)
                     _backend.Pause();
@@ -258,6 +322,8 @@ namespace SyncVideo.Runtime
             if (!lobby.IsPlaying)
             {
                 _viewerCommandSyncingTimer = 0f;
+                _viewerLastSeenHostMediaTime = lobby.MediaTimeSeconds;
+                _viewerHostFrozenTimer = 0f;
 
                 if (drift >= 0.03d)
                 {
@@ -282,6 +348,24 @@ namespace SyncVideo.Runtime
             bool _stateIsStale = _stateAge > 4f;
             if (_stateIsStale)
                 return;
+
+            // viewers pause instead of seek backward if host fails
+            if (Math.Abs(lobby.MediaTimeSeconds - _viewerLastSeenHostMediaTime) > 0.1d)
+            {
+                _viewerLastSeenHostMediaTime = lobby.MediaTimeSeconds;
+                _viewerHostFrozenTimer = 0f;
+            }
+            else
+            {
+                _viewerHostFrozenTimer += deltaTime;
+            }
+
+            if (_viewerHostFrozenTimer >= HostStallDetectSeconds)
+            {
+                _viewerCommandSyncingTimer = 0f;
+                _backend.NudgeToward(current, 0d);
+                return;
+            }
 
             // Existing viewers no longer hard-seek for small drifts
             if (drift >= Math.Max(1.5d, (double)SyncVideoPlugin.Settings.HardSeekThresholdSeconds.Value))
@@ -347,8 +431,14 @@ namespace SyncVideo.Runtime
 
             _hostCommandCooldown = 0.5f;
 
+            // Cancel any stall if host uses controls
+            _hostIsStalled = false;
+            _hostStallTimer = 0f;
+            _hostReconnectBufferTimer = 0f;
+
             var currentLobby = _lobbyManager.CurrentLobby;
             var startTime = _backend.CurrentTimeSeconds;
+            _hostStallCheckTime = startTime; // reset stall baseline to current position
 
             if (currentLobby != null && !currentLobby.IsPlaying)
             {
@@ -372,6 +462,10 @@ namespace SyncVideo.Runtime
                 return;
 
             _hostCommandCooldown = 0.5f;
+
+            _hostIsStalled = false;
+            _hostStallTimer = 0f;
+            _hostReconnectBufferTimer = 0f;
 
             _backend.Pause();
             _lobbyManager.SetPlayback(false);
@@ -514,6 +608,12 @@ namespace SyncVideo.Runtime
             _lastAppliedAudioTrack = int.MinValue;
             _lastAppliedSubtitleTrack = int.MinValue;
             _viewerLocalTrackOverride = false;
+            _hostIsStalled = false;
+            _hostStallTimer = 0f;
+            _hostStallCheckTime = 0d;
+            _hostReconnectBufferTimer = 0f;
+            _viewerLastSeenHostMediaTime = -1d;
+            _viewerHostFrozenTimer = 0f;
             YouTube.CancelAllPendingRequests();
             _backend.Stop();
             return _activeLoadRequestId;
@@ -637,6 +737,8 @@ namespace SyncVideo.Runtime
                 _viewerSeekDirection = 0;
                 _lastLoadedLobbyUrl = string.Empty;
                 _lastLoadedVideoId = string.Empty;
+                _viewerLastSeenHostMediaTime = -1d;
+                _viewerHostFrozenTimer = 0f;
                 YouTube.ClearAllCache();
                 StateChanged?.Invoke(null);
                 return;
@@ -672,6 +774,8 @@ namespace SyncVideo.Runtime
                 _lastAppliedSeekRevision = lobby.SeekRevision;
                 _viewerSeekDirection = 0;
                 _viewerCommandSyncingTimer = 0f;
+                _viewerLastSeenHostMediaTime = -1d;
+                _viewerHostFrozenTimer = 0f;
                 CancelPendingLoadAndPlayback();
                 LoadUrlWithResolution(lobbyUrl, lobbyVideoId);
 
@@ -799,6 +903,29 @@ namespace SyncVideo.Runtime
                 SyncVideoPlugin.ScreenManager?.OnVideoChanged();
                 SyncVideoPlugin.ScreenManager?.OnPlaybackStateChanged(true, 0d);
                 StateChanged?.Invoke(MakeState(_lobbyManager.CurrentLobby));
+                return;
+            }
+
+            // Reconnect after a host stall: seek back to where we froze, play privately for
+            // HostReconnectBufferSeconds so the decoder builds a buffer, then resume the lobby
+            if (_hostIsStalled && _lobbyManager.IsHost)
+            {
+                _hostIsStalled = false;
+                _hostStallTimer = 0f;
+                _hostStallCheckTime = _hostReconnectResumeTime;
+
+                var reconnectLobby = _lobbyManager.CurrentLobby;
+                if (reconnectLobby != null)
+                {
+                    _lastLoadedLobbyUrl = reconnectLobby.CurrentUrl ?? string.Empty;
+                    _lastLoadedVideoId = reconnectLobby.CurrentVideoId ?? string.Empty;
+                }
+
+                _backend.Seek(_hostReconnectResumeTime);
+                _backend.Play();
+                _hostReconnectBufferTimer = HostReconnectBufferSeconds;
+
+                SyncVideoPlugin.ScreenManager?.OnVideoChanged();
                 return;
             }
 
